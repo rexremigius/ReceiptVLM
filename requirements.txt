@@ -1,0 +1,13 @@
+mlx==0.29.3
+mlx-lm==0.29.1
+mlx-vlm==0.1.15
+# Pinned below 4.5x: newer transformers makes Qwen2's image processor "fast"-only,
+# which hard-requires PyTorch tensors and breaks mlx_vlm's own (non-torch) preprocessing path.
+transformers==4.49.0
+datasets==4.5.0
+pillow==10.4.0
+pytesseract==0.3.13
+# torch/torchvision are only imported by transformers' AutoProcessor class-resolution
+# checks for Qwen2.5-VL — never used for compute, mlx handles that on-device.
+torch==2.8.0
+torchvision==0.23.0

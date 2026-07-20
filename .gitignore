@@ -1,0 +1,12 @@
+# WildReceipt dataset + raw archive (re-downloadable, large)
+data/wildreceipt/
+data/*.tar
+
+# Model checkpoints / weights
+*.safetensors
+*.bin
+checkpoints/
+
+# Python
+__pycache__/
+.venv/

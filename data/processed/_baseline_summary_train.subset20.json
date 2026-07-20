@@ -1,0 +1,23 @@
+{
+  "split": "train",
+  "receipts": 20,
+  "field_present": {
+    "store": 20,
+    "date": 8,
+    "tax": 6,
+    "tip": 0,
+    "subtotal": 4,
+    "total": 7
+  },
+  "field_missing": {
+    "store": 0,
+    "date": 12,
+    "tax": 14,
+    "tip": 20,
+    "subtotal": 16,
+    "total": 13
+  },
+  "line_items_total": 55,
+  "line_items_per_receipt_avg": 2.75,
+  "receipts_with_no_line_items": 10
+}

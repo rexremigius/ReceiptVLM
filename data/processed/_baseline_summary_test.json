@@ -1,0 +1,23 @@
+{
+  "split": "test",
+  "receipts": 472,
+  "field_present": {
+    "store": 454,
+    "date": 212,
+    "tax": 130,
+    "tip": 8,
+    "subtotal": 103,
+    "total": 156
+  },
+  "field_missing": {
+    "store": 18,
+    "date": 260,
+    "tax": 342,
+    "tip": 464,
+    "subtotal": 369,
+    "total": 316
+  },
+  "line_items_total": 1222,
+  "line_items_per_receipt_avg": 2.59,
+  "receipts_with_no_line_items": 160
+}

@@ -1,0 +1,44 @@
+{
+  "split": "train",
+  "receipts": 1267,
+  "field_present": {
+    "store": 836,
+    "date": 1072,
+    "tax": 852,
+    "tip": 68,
+    "subtotal": 892,
+    "total": 1116
+  },
+  "field_missing": {
+    "store": 431,
+    "date": 195,
+    "tax": 415,
+    "tip": 1199,
+    "subtotal": 375,
+    "total": 151
+  },
+  "line_items_total": 6145,
+  "line_items_per_receipt_avg": 4.85,
+  "receipts_with_no_line_items": 109,
+  "dropped_categories": {
+    "Others": 19632,
+    "Prod_quantity_value": 3678,
+    "Ignore": 3650,
+    "Store_addr_value": 1598,
+    "Total_key": 1270,
+    "Time_value": 1086,
+    "Tax_key": 1036,
+    "Subtotal_key": 907,
+    "Tel_value": 743,
+    "Tel_key": 298,
+    "Prod_price_key": 259,
+    "Prod_item_key": 256,
+    "Date_key": 241,
+    "Prod_quantity_key": 239,
+    "Time_key": 128,
+    "Tips_key": 119,
+    "Store_name_key": 3,
+    "Store_addr_key": 2
+  },
+  "dropped_total": 35145
+}
