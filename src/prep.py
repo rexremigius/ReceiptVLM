@@ -59,14 +59,50 @@ def box_height(box: list[float]) -> float:
     return max(ys) - min(ys)
 
 
+_MONEY_TOKEN_RE = re.compile(r"-?[\d,]*\.?\d+")
+
+
+def _fix_decimal_separator(num_text: str) -> str:
+    """Disambiguate ',' as a European decimal separator vs a US thousands separator.
+
+    A dot elsewhere in the string makes the comma's role unambiguous (thousands
+    separator, e.g. "1,299.00" -> "1299.00"), so we just strip it. With no dot,
+    a single comma followed by exactly two digits ("24,65") is read as a decimal
+    separator; a comma followed by three digits ("1,299") is read as a thousands
+    grouping. Multiple commas are always thousands separators, since a real
+    number has at most one decimal point.
+    """
+    if "." in num_text:
+        return num_text.replace(",", "")
+    if num_text.count(",") == 1:
+        head, tail = num_text.split(",")
+        if len(tail) == 2:
+            return f"{head}.{tail}"
+    return num_text.replace(",", "")
+
+
 def clean_money(text: str) -> str | None:
-    """Extract the numeric portion of a money string ('$12.34' -> '12.34')."""
-    # [\d,]* before an optional dot so leading-decimal amounts (".49") keep their
-    # point instead of being read as 49; \d+ requires at least one trailing digit.
-    m = re.search(r"-?[\d,]*\.?\d+", text.replace(" ", ""))
-    if not m:
-        return None
-    return m.group(0).replace(",", "")
+    """Extract the numeric portion of a money string ('$12.34' -> '12.34').
+
+    Money fields can be built from more than one WildReceipt box joined with a
+    space (see build_record). The old version stripped that space before
+    parsing, which let two *separate* boxes' digits fuse into one bogus number
+    (observed in real data: "58.92" + "58" -> "58.9258"). Instead, each
+    space-separated token is checked on its own, and we take the first one
+    that actually contains a number - a stray duplicate box just gets ignored
+    rather than merged in.
+
+    Tradeoff: if a single value were ever genuinely OCR-split across two boxes
+    (e.g. "5" and ".00" as separate boxes for one number "5.00"), this would
+    now only pick up "5" and miss the rest. We haven't seen that case in the
+    data so far - duplicate/stray boxes are the pattern that actually shows up -
+    but flagging it since it's the real cost of this fix.
+    """
+    for token in text.split():
+        m = _MONEY_TOKEN_RE.search(token)
+        if m:
+            return _fix_decimal_separator(m.group(0))
+    return None
 
 
 def _median(xs: list[float]) -> float:
