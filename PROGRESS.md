@@ -23,9 +23,9 @@ session's best-fit call, not yet confirmed by the team — flagged below.
 | 1 | `src/prep.py` — WildReceipt boxes → JSON (1267 train / 472 test → `data/processed/*.jsonl`) | [x] done | Person A |
 | 2 | `src/baseline.py` — OCR+regex extraction | [x] done | Person B |
 | 3 | Zero-shot VLM baseline (Qwen2.5-VL-3B-Instruct-4bit, no adapter) — `data/processed/zeroshot_test.jsonl` | [x] done | Person B |
-| 4 | `src/train.py` — QLoRA fine-tune (sweep done, winning config rank=4/alpha=0.5/lr=5e-5 promoted to `checkpoints/final/adapters.safetensors`; generalization/augmentation retraining still open) | [x] initial run / [x] sweep | Person B |
-| 5 | `src/eval.py` — per-field eval harness | [ ] | Person A |
-| 6 | `src/taxonomy.py` — failure taxonomy | [ ] | Person A |
+| 4 | `src/train.py` — QLoRA fine-tune (sweep done; retrained on corrected ground truth after #5/#6 found the old prep.py's money-parsing bug; rank=4/alpha=0.5/lr=5e-5 promoted to `checkpoints/final/adapters.safetensors`) | [x] initial run / [x] sweep / [x] retrain on fixed data | Person B |
+| 5 | `src/eval.py` — per-field eval harness | [x] done | Person A |
+| 6 | `src/taxonomy.py` — failure taxonomy | [x] done | Person A |
 | 7 | `src/quantize.py` — FP16/INT8/INT4 sweep | [ ] | Person C |
 | 8 | `src/confidence.py` — calibrated confidence | [ ] | Person A *(unconfirmed)* |
 | 9 | JSON repair layer | [ ] | Person C *(unconfirmed)* |
@@ -43,6 +43,48 @@ Template for each entry:
 **Next:** 
 **Learned:** (key design decision + alternative considered, per learning mode in CLAUDE.md)
 -->
+
+### 2026-07-21
+**Built:** investigated a teammate report of "F1 is low" after #5 `eval.py`/#6 `taxonomy.py`
+landed (this repo, `rexremigius/ReceiptVLM` — the actual shared repo with real commit
+history; a separate `dheeraajpinjala/ReceiptVLM` clone used earlier in the session never
+had this work pushed to it). Ran the real harness instead of trusting the verbal claim:
+micro-F1 was genuinely 0.522 [0.491, 0.554] — a real, valid concern, not a false alarm,
+even though it beats zero-shot (0.201) and OCR baseline (0.110) by a wide margin.
+`taxonomy.py` showed the error mix wasn't uniform: 69% of all 3241 error instances
+(2251) were `line_items` row-level missing/hallucinated — the model producing the wrong
+*set* of line items entirely — versus a much smaller, concentrated cluster of scalar/aligned
+numeric errors that matched a specific pattern: money values missing their decimal point
+(e.g. `"1200"` instead of `"12.00"`), traced to a real bug in the *old* `prep.py`'s
+`clean_money` (fixed in the same commit as #5/#6): concatenating digits from separate
+WildReceipt boxes when a money field spanned more than one box. ~29% of `train.jsonl`
+records had this corruption, so the model had genuinely learned to reproduce bad formatting
+for that subset — not a training failure, a label-quality failure.
+Retrained on the corrected `train.jsonl` with the same sweep-winning config
+(rank=4/alpha=0.5/lr=5e-5, 2 epochs) rather than re-running the sweep — the label fix
+doesn't plausibly change which hyperparameters are best, only whether some receipts' targets
+are correct. Result: micro-F1 0.522 → 0.525, **not statistically distinguishable**
+(CIs overlap almost completely). `total` F1 improved meaningfully (0.786→0.844, the
+decimal-shift far-misses genuinely went away — confirmed via `taxonomy.py`: `total`
+numeric_far_miss 35→29, line_items.price numeric_far_miss 144→108) but `line_items`
+row-level errors were *unchanged* (2251→2289) — the ground-truth fix addressed a real,
+concrete bug but was never the dominant driver of the "low F1" report. Promoted anyway
+(`checkpoints/retrain_fixed_data/final` → `checkpoints/final`,
+`finetuned_retrain_test.jsonl` → `finetuned_test.jsonl`, old versions kept as
+`_finetuned_test.old_buggydata.jsonl` / `_finetuned_test.old_rank8.jsonl`) since training on
+correct labels is the right foundation regardless of the immediate score movement.
+**Next:** the real priority is line-item extraction — the model inventing or dropping whole
+line items is 69-72% of all remaining errors and is untouched by this retrain. Needs its own
+investigation (prompt changes discouraging invented items, more line-item-focused training
+signal, or dedicated analysis of *why* alignment fails so often) rather than another blanket
+retrain. #7 `quantize.py`/#10 `serve.py` (Person C) and #8 `confidence.py`/#9 repair
+layer/#11 OOD (unconfirmed owners) are still open.
+**Learned:** "F1 is low" turned out to be true but incomplete as a diagnosis — retraining
+on a hunch (even a well-reasoned one, the decimal-shift bug) without first running the
+taxonomy to see the *actual* error distribution would have spent ~3 hours of compute fixing
+~1-2% of total errors while leaving the 69%-dominant problem completely unexamined. The
+taxonomy breakdown (not just the micro-F1 number) is what made it possible to give an honest
+"this won't fix it, but here's what would" answer instead of just retraining and hoping.
 
 ### 2026-07-19
 **Built:** #3 `src/zeroshot.py` (zero-shot VLM baseline, Track B). The "zero-shot baseline
