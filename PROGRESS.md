@@ -44,6 +44,72 @@ Template for each entry:
 **Learned:** (key design decision + alternative considered, per learning mode in CLAUDE.md)
 -->
 
+### 2026-07-23
+**Built:** validated Person B's latest retrain (`checkpoints/final`, `finetuned_test.jsonl`)
+by re-running #5 `eval.py`/#6 `taxonomy.py` before signing off on it. The number produced by
+the working tree didn't match what's already written in this file (0.779 vs. the 0.724
+logged on 2026-07-21) — rather than trust whichever result came out of whatever code
+happened to be on disk, diffed the working tree against the last committed `eval.py` to find
+out why they disagreed. That surfaced several real bugs in the harness itself, not the model:
+1. `paired_bootstrap_test`'s report printed Greek/Unicode symbols that crash on Windows'
+   default console codepage (`UnicodeEncodeError`) — this machine never got a working
+   multi-file comparison out of it. Replaced with ASCII.
+2. `taxonomy.py`'s report table used a fixed 16-char column width; several category names
+   (e.g. `line_item_hallucinated`, 23 chars) overflowed it, running the header and long
+   columns together illegibly. Made the width dynamic.
+3. A char-similarity fallback already in the working tree (`desc_score`/`token_overlap`,
+   meant to catch single-OCR-typo item names) had no length/token gate, so it false-matched
+   unrelated short names on coincidental character overlap (e.g. `"Gyros"` vs
+   `"GrossesWasser"` scored 0.44) — inflating line-item F1 for the wrong reason. Verified via
+   spot-check: 2417 gold×pred name pairs crossed the alignment threshold via char-score alone,
+   almost all clearly unrelated. Tightened to single-token names only, threshold 0.75 — after
+   the fix, the crossing pairs still found (400) are legitimate OCR near-misses (e.g.
+   `172246PELEDCAROTS` vs `172246PEEDECAROTS`).
+4. `bootstrap_micro_f1`/`paired_bootstrap_test` re-ran full line-item alignment from scratch
+   on every one of 1000 resamples, for every receipt, even though a receipt's score is
+   deterministic — only which receipts get redrawn changes across resamples. Cached
+   per-receipt TP/FP/FN counts once; the full 4-file, 6-pairwise-test comparison went from
+   an unfinished 60+ minute run to 14 seconds, with byte-identical results (verified against
+   the pre-fix smoke-test output at the same seed).
+5. `match()` required exact string equality for `store`, so a correct-but-more-complete read
+   (gold `"Chipotle"`, pred `"Chipotle Mexican Grill #4021"`) scored as wrong. Added
+   containment credit (either string contains the other) — store F1 0.675→0.825.
+6. `align_line_items`'s greedy tie-break used `s >= best_s`, so on an exact tie it kept
+   overwriting to the *last* matching candidate instead of the first. Receipts with
+   duplicate item names (repeat purchases, or the same OCR typo hitting two identical
+   products) hit this constantly — e.g. two `"PORKSPARERIBS"` rows with different real
+   prices got cross-wired, producing a `numeric_far_miss` that looked like a genuine model
+   error but was purely a scoring bug (the model's raw output was already in the correct
+   order). Changed to `s > best_s`; verified against the two receipts that originally
+   flagged this (Image_8, Image_36) — prices now align exactly.
+
+Net corrected result: **micro-F1 0.781** for the current checkpoint (vs. the uncorrected
+0.724), 95% CI [0.755, 0.802]. Paired bootstrap confirms every step of the pipeline is a
+real, significant improvement, not noise: baseline→zero-shot Δ=+0.097, zero-shot→old
+fine-tune Δ=+0.373, old→new fine-tune Δ=+0.196 (95% CI [+0.170,+0.220]), all p≈0.000.
+
+**Next:** line items are still ~68% of all remaining errors (row-level missing/hallucinated
+708 + name 359 + price 213) — this is where any further F1 gain has to come from, not the
+scalar fields (all ≥0.85 except `tip`, which is a support-sparsity artifact, not a model
+issue). For Person B: re-run `sweep.py` at the current 768x1024 resolution — the winning
+rank=4/alpha=0.5/lr=5e-5 config was picked by a sweep done *before* that resolution change,
+so it's untested at the resolution actually in use; also worth trying early stopping given
+the "mild memorization" signal already noted in this log, and a prompt-level fix for
+line-item over-generation (hallucinated rows, 405, still outnumber missing, 303). One loose
+end: `image_36`'s SWIRLPOPS/LACTAIDFF/LIPTICETEA price mismatch survives the alignment fix,
+so it's now confirmed as a genuine content disagreement (possibly a gold-annotation gap, not
+a pairing bug) — worth a source-image check but not urgent. `#8`/`#11` ownership (tentatively
+Person A, per the Status table) still needs team confirmation.
+**Learned:** trusting whatever `eval.py` happens to be on disk, without checking it against
+the version that actually produced the numbers already logged here, would have accepted an
+inflated F1 as the retrain's real improvement — diffing working-tree vs. last-committed
+code, and re-deriving the discrepancy from concrete examples rather than assuming either
+number was right, is what caught it. The alignment tie-break bug (#6 above) is the sharper
+lesson: it only manifests on receipts with duplicate item names, and it produces a
+*plausible*, taxonomy-classifiable error (`numeric_far_miss`) indistinguishable from a real
+model mistake unless you inspect the raw aligned pairs directly — a "the model got the price
+wrong" conclusion here would have been confidently wrong.
+
 ### 2026-07-21
 **Built:** investigated a teammate report of "F1 is low" after #5 `eval.py`/#6 `taxonomy.py`
 landed (this repo, `rexremigius/ReceiptVLM` — the actual shared repo with real commit
