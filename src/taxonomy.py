@@ -14,11 +14,12 @@ Usage:
 """
 
 import argparse
+import difflib
 import json
 import re
 from collections import defaultdict
 
-import eval as ev  # reuse normalize_text, normalize_num, match, align_line_items
+import eval as ev
 
 # --- category definitions ----------------------------------------------------
 MISSING = "missing"                    # gold has value, pred omitted it
@@ -47,11 +48,21 @@ def is_digit_transposition(gold, pred):
 
 
 def token_overlap(a, b):
-    ta = set(re.findall(r"\w+", ev.normalize_text(a) or ""))
-    tb = set(re.findall(r"\w+", ev.normalize_text(b) or ""))
+    """Same scoring as eval.py's desc_score, duplicated here (not imported) so
+    classify() and the line-item alignment step never disagree about
+    closeness under two different rules.
+    """
+    na, nb = ev.normalize_text(a), ev.normalize_text(b)
+    ta = set(re.findall(r"\w+", na or ""))
+    tb = set(re.findall(r"\w+", nb or ""))
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / len(ta | tb)
+    word_score = len(ta & tb) / len(ta | tb)
+    if len(ta) == 1 and len(tb) == 1:
+        char_score = difflib.SequenceMatcher(None, na or "", nb or "").ratio()
+        if char_score >= ev.CHAR_FALLBACK_THRESHOLD:
+            return max(word_score, char_score)
+    return word_score
 
 
 def classify(field, gold_val, pred_val):
@@ -65,7 +76,7 @@ def classify(field, gold_val, pred_val):
         return HALLUCINATED
     if ev.match(field, gold_val, pred_val):
         return None  # agrees under eval.py's rule -> not an error
-    
+
     leaf = field.rsplit(".", 1)[-1]
 
     if leaf in ev.NUMERIC_FIELDS:
@@ -129,19 +140,20 @@ CATEGORY_ORDER = [MISSING, HALLUCINATED, DIGIT_TRANSPOSED, NUMERIC_NEAR,
 
 def print_report(name, counts, examples, n):
     print(f"\n=== failure taxonomy: {name}  (n={n} receipts) ===\n")
-    header = f"{'field':<24}" + "".join(f"{c:>16}" for c in CATEGORY_ORDER)
+    col_w = max(len(c) for c in CATEGORY_ORDER) + 2
+    header = f"{'field':<24}" + "".join(f"{c:>{col_w}}" for c in CATEGORY_ORDER)
     print(header)
     total_by_cat = defaultdict(int)
     field_totals = []
     for field in sorted(counts, key=lambda f: -sum(counts[f].values())):
         row = counts[field]
-        line = f"{field:<24}" + "".join(f"{row.get(c, 0):>16}" for c in CATEGORY_ORDER)
+        line = f"{field:<24}" + "".join(f"{row.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER)
         print(line)
         for c in CATEGORY_ORDER:
             total_by_cat[c] += row.get(c, 0)
         field_totals.append((field, sum(row.values())))
-    print("-" * (24 + 16 * len(CATEGORY_ORDER)))
-    print(f"{'TOTAL':<24}" + "".join(f"{total_by_cat.get(c, 0):>16}" for c in CATEGORY_ORDER))
+    print("-" * (24 + col_w * len(CATEGORY_ORDER)))
+    print(f"{'TOTAL':<24}" + "".join(f"{total_by_cat.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER))
 
     field_totals.sort(key=lambda x: -x[1])
     print("\ntop offending fields:")
