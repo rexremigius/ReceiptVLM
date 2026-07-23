@@ -1,0 +1,27 @@
+{
+  "split": "test",
+  "model": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
+  "adapter_path": "checkpoints/final",
+  "receipts": 472,
+  "parse_failures": 236,
+  "field_present": {
+    "store": 228,
+    "date": 25,
+    "tax": 177,
+    "tip": 11,
+    "subtotal": 188,
+    "total": 135
+  },
+  "field_missing": {
+    "store": 244,
+    "date": 447,
+    "tax": 295,
+    "tip": 461,
+    "subtotal": 284,
+    "total": 337
+  },
+  "line_items_total": 152,
+  "line_items_per_receipt_avg": 0.32,
+  "receipts_with_no_line_items": 394,
+  "elapsed_seconds": 1167.1
+}

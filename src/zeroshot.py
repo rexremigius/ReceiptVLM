@@ -85,8 +85,21 @@ def main():
     ap.add_argument("--tag", default=None,
                      help="output file tag; defaults to 'finetuned' if --adapter-path is "
                           "set, else 'zeroshot'")
-    ap.add_argument("--max-tokens", type=int, default=512)
-    ap.add_argument("--image-resize", type=int, nargs=2, default=[448, 448])
+    # 512 truncated mid-JSON on receipts with many line items (p99 is 21 items, max is 50;
+    # 50 items alone need ~500-600 tokens before scalar fields/JSON structure even start).
+    # 1536 covers the observed max with headroom.
+    ap.add_argument("--max-tokens", type=int, default=1536)
+    # NB: tried repetition_penalty=1.3 to fight a repeat-loop degeneration on illegible
+    # long receipts — it wrecked accuracy across the board (micro-F1 0.525 -> 0.069, parse
+    # failures 10 -> 236/472) because JSON syntax is *inherently* repetitive (every line
+    # item repeats `{"name":`/`"price":`/`},{`, every receipt repeats the same field-name
+    # keys) — penalizing repeated tokens fights the correct structure, not just the
+    # pathological content loop. Do not re-enable for this task without a much lower
+    # value and a smaller context window tested on a subset first.
+    ap.add_argument("--repetition-penalty", type=float, default=None)
+    ap.add_argument("--repetition-context-size", type=int, default=20)
+    # must match train.py's default — the production checkpoint was trained at 768x1024
+    ap.add_argument("--image-resize", type=int, nargs=2, default=[768, 1024])
     args = ap.parse_args()
     tag = args.tag or ("finetuned" if args.adapter_path else "zeroshot")
 
@@ -104,6 +117,8 @@ def main():
         raw = generate(
             model, processor, prompt, image=str(DATA_ROOT / image_id),
             max_tokens=args.max_tokens, temperature=0.0, resize_shape=resize_shape,
+            repetition_penalty=args.repetition_penalty,
+            repetition_context_size=args.repetition_context_size,
             verbose=False,
         )
         parsed = extract_json(raw)

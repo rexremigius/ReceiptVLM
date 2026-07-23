@@ -19,14 +19,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import shutil
 import time
 from pathlib import Path
 
 import mlx.core as mx
+import mlx.nn as nn
 import mlx.optimizers as optim
 from datasets import Dataset as HFDataset
+from mlx.utils import tree_flatten, tree_map
 from mlx_vlm import load
 from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.trainer import Dataset, Trainer, save_adapter
@@ -116,12 +119,44 @@ def resolve_assistant_id(processor, dataset: Dataset) -> int:
     return assistant_id
 
 
+def guarded_train_step(trainer: Trainer, batch) -> tuple[float, bool]:
+    """Trainer.train_step, but skips the optimizer update if loss/grads are NaN/Inf.
+
+    Found by direct reproduction: a specific training image, only at higher resize
+    resolutions (768x1024), produces an unusually large vision-tower patch grid
+    (74x52=3848 patches vs. 768 at 448x448) that triggers NaN somewhere in the forward
+    pass — confirmed the raw preprocessed pixel values themselves are clean (no NaN/Inf),
+    so it's a numerical edge case inside the model at that scale, not a data bug. Since
+    Adam's moving averages absorb a NaN update permanently, one bad image silently wrecked
+    an entire multi-hour run (loss went NaN at step ~6 of 2280 and never recovered). This
+    checks loss/grads *before* they reach the optimizer, so a single pathological example
+    costs one skipped step instead of the whole run.
+    """
+    loss_and_grad_fn = nn.value_and_grad(trainer.model, trainer.loss_fn)
+    loss, grads = loss_and_grad_fn(trainer.model, batch)
+    mx.eval(loss)
+    bad = bool(mx.isnan(loss).item() or mx.isinf(loss).item())
+    if not bad:
+        bad = any(bool(mx.any(mx.isnan(g) | mx.isinf(g)).item())
+                   for _, g in tree_flatten(grads))
+    if bad:
+        return loss, False
+    if trainer.clip_gradients is not None:
+        grads = tree_map(lambda g: mx.clip(g, -trainer.clip_gradients, trainer.clip_gradients), grads)
+    trainer.optimizer.update(trainer.model, grads)
+    return loss, True
+
+
 def val_loss(trainer: Trainer, dataset: Dataset, max_batches: int | None = None) -> float:
+    """Mean val loss, excluding NaN/Inf examples (same forward-pass edge case
+    guarded_train_step protects against — a single poisoned example previously
+    turned the whole aggregate NaN even though the model itself was fine)."""
     n = len(dataset) if max_batches is None else min(max_batches, len(dataset))
     if n == 0:
         return float("nan")
-    total = sum(trainer.loss_fn(trainer.model, dataset[i]).item() for i in range(n))
-    return total / n
+    losses = [trainer.loss_fn(trainer.model, dataset[i]).item() for i in range(n)]
+    clean = [v for v in losses if not (math.isnan(v) or math.isinf(v))]
+    return sum(clean) / len(clean) if clean else float("nan")
 
 
 def save_checkpoint(model, step: int, keep_last: int, ckpt_root: Path) -> Path:
@@ -153,7 +188,12 @@ def main():
     # 15 steps on the tiny-subset validation run.
     ap.add_argument("--lora-alpha", type=float, default=1.0)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
-    ap.add_argument("--image-resize", type=int, nargs=2, default=[448, 448])
+    # 448x448 was the original default; receipts with many line items (tall/narrow images,
+    # e.g. 1040x1536) got squashed illegibly at that size, causing severe under-extraction
+    # of line items (confirmed via taxonomy.py + direct inspection). 768x1024 fixed it:
+    # micro-F1 0.525 -> 0.724 on the full test set. Keep this in sync with zeroshot.py's
+    # default so training and inference always use the same resolution.
+    ap.add_argument("--image-resize", type=int, nargs=2, default=[768, 1024])
     ap.add_argument("--save-every", type=int, default=50)
     ap.add_argument("--eval-every", type=int, default=25)
     ap.add_argument("--print-every", type=int, default=5)
@@ -193,19 +233,25 @@ def main():
     order = list(range(len(train_ds)))
     rng = random.Random(args.seed)
     history = []
+    skipped_steps = 0
     t_start = time.time()
 
     for step in range(total_steps):
         pos = step % len(order)
         if pos == 0:
             rng.shuffle(order)
-        loss = trainer.train_step(train_ds[order[pos]])
+        loss, applied = guarded_train_step(trainer, train_ds[order[pos]])
         mx.eval(model.parameters(), optimizer.state)
         loss_val = loss.item()
-        entry = {"step": step, "loss": loss_val}
+        entry = {"step": step, "loss": loss_val, "applied": applied}
+        if not applied:
+            skipped_steps += 1
+            print(f"step {step}/{total_steps} SKIPPED (NaN/Inf loss or grad, "
+                  f"record={train_records[order[pos]]['image_id']})")
 
         if step % args.print_every == 0:
-            print(f"step {step}/{total_steps} loss {loss_val:.4f} ({time.time() - t_start:.1f}s)")
+            print(f"step {step}/{total_steps} loss {loss_val:.4f} ({time.time() - t_start:.1f}s)"
+                  + (f"  [{skipped_steps} skipped so far]" if skipped_steps else ""))
 
         if val_ds is not None and args.eval_every and step > 0 and step % args.eval_every == 0:
             v = val_loss(trainer, val_ds)

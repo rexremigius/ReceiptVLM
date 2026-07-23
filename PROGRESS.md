@@ -23,7 +23,7 @@ session's best-fit call, not yet confirmed by the team — flagged below.
 | 1 | `src/prep.py` — WildReceipt boxes → JSON (1267 train / 472 test → `data/processed/*.jsonl`) | [x] done | Person A |
 | 2 | `src/baseline.py` — OCR+regex extraction | [x] done | Person B |
 | 3 | Zero-shot VLM baseline (Qwen2.5-VL-3B-Instruct-4bit, no adapter) — `data/processed/zeroshot_test.jsonl` | [x] done | Person B |
-| 4 | `src/train.py` — QLoRA fine-tune (sweep done; retrained on corrected ground truth after #5/#6 found the old prep.py's money-parsing bug; rank=4/alpha=0.5/lr=5e-5 promoted to `checkpoints/final/adapters.safetensors`) | [x] initial run / [x] sweep / [x] retrain on fixed data | Person B |
+| 4 | `src/train.py` — QLoRA fine-tune (sweep done; retrained on corrected ground truth; retrained again at 768x1024 resolution — micro-F1 0.525→0.724; rank=4/alpha=0.5/lr=5e-5, `image-resize` 768x1024 promoted to `checkpoints/final/adapters.safetensors`) | [x] initial run / [x] sweep / [x] retrain on fixed data / [x] hires retrain | Person B |
 | 5 | `src/eval.py` — per-field eval harness | [x] done | Person A |
 | 6 | `src/taxonomy.py` — failure taxonomy | [x] done | Person A |
 | 7 | `src/quantize.py` — FP16/INT8/INT4 sweep | [ ] | Person C |
@@ -85,6 +85,90 @@ taxonomy to see the *actual* error distribution would have spent ~3 hours of com
 ~1-2% of total errors while leaving the 69%-dominant problem completely unexamined. The
 taxonomy breakdown (not just the micro-F1 number) is what made it possible to give an honest
 "this won't fix it, but here's what would" answer instead of just retraining and hoping.
+
+**Update (same day, generation-time experiments):** dug into the 69-72% line-item error
+bucket further: 34% of receipts with >=5 gold line items had *fewer* predicted items than
+gold, and the worst cases (gold=50/27/23 items, pred=0) traced to two compounding causes —
+(1) `max_tokens=512` truncating mid-JSON on receipts needing ~600+ tokens just for the
+line-item array, producing unparseable output, and (2) tall/narrow receipt images (e.g.
+1040x1536, 612x1024) getting squashed to as little as 206-303px wide under our fixed
+448x448 resize, making the actual text illegible and pushing the model into a
+repetition-loop hallucination (confirmed directly: raw output was a real receipt's worth of
+`{"name": "HAMBURGER", "price": "2.00"}` repeated 27+ times, not real content from the
+image).
+Tested both fixes empirically on the full 472-receipt test set rather than assuming they'd
+help:
+- `repetition_penalty=1.3` (meant to break the repeat-loop): **made things dramatically
+  worse** — micro-F1 0.525 -> 0.069, parse failures 10 -> 236/472. JSON syntax is
+  inherently repetitive by construction (every line item repeats `{"name":`/`"price":`,
+  every receipt repeats the same six field keys) — penalizing repeated tokens fights the
+  correct structure, not just the pathological content loop. Reverted immediately; kept as
+  an off-by-default option in `zeroshot.py` with a comment explaining why, so it isn't
+  quietly re-tried later. Failed run kept as
+  `_FAILED_finetuned_gentweaks_test.jsonl` for reference.
+- `max_tokens` 512->1536 (meant to stop truncation): **no measurable effect** — micro-F1
+  0.525 -> 0.523, `line_items.name`/`price` F1 essentially flat (0.462->0.460,
+  0.409->0.407). Real for the individual receipts it affects, but there aren't enough of
+  them in 472 receipts to move the aggregate metric. Kept as the new default anyway since
+  it's strictly safer (handles the rare long-receipt edge case, doesn't hurt anything else).
+**Learned:** a plausible-sounding fix (repetition_penalty for a confirmed repeat-loop
+symptom) can be actively harmful for structured-output tasks specifically because "repeated
+tokens" means something different in JSON than in free-text generation — the general ML
+intuition doesn't transfer without checking the specific output format. Tested on the full
+set rather than trusting the one worked example, which is what caught it before it got
+promoted. Net result: the two free/no-retrain fixes are exhausted (one harmful, one neutral)
+— the image-resolution retrain is the only concretely-diagnosed lever left, and it's
+unverified/expensive (~2-3 hrs) rather than a confirmed win, so it's a real cost/benefit
+call rather than an obvious next step.
+
+**Update (image-resolution retrain — the big one):** decided to spend the ~2-3 hrs.
+Checked memory footprint first (768x1024 and 896x1024 both ~6.7GB peak, safely under
+16GB) and ran the mandated tiny-subset validation before committing — this time actually
+inspecting real generation output (not just the loss curve, per the earlier "F1 is low"
+lesson): no more repeat-loop degeneration, much longer/more coherent output on the
+worst-case receipt. Two infrastructure problems hit along the way, both real and both fixed:
+1. **Multi-hour silent stall**: the first full retrain attempt showed only ~25 min of
+   actual CPU time across 5.5 hours of wall-clock elapsed — macOS suspending/throttling
+   the long-running background process (almost certainly sleep/App Nap overnight). Killed
+   and restarted under `caffeinate -i`; ran to completion cleanly afterward. Lesson: any
+   multi-hour unattended background job on this machine needs `caffeinate`, not just
+   `run_in_background`.
+2. **Silent full-run corruption**: that restarted run "completed" (exit 0) but the loss had
+   gone NaN by step ~6 of 2280 and *never recovered* — Adam's moving averages permanently
+   absorb a NaN update, so the entire ~5-hour run after that point did nothing useful.
+   Traced to a specific training image (deterministically reproduced by replaying the exact
+   `random.Random(seed).shuffle()` order `train.py` uses) that produces an unusually large
+   vision-tower patch grid (74x52=3848 patches vs. 768 at 448x448) at the higher resolution.
+   Confirmed the raw preprocessed pixel values are clean (no NaN/Inf) — the bug is inside
+   the model's forward pass at that scale, not a data issue. Added `guarded_train_step()` to
+   train.py: replicates `Trainer.train_step`'s logic but checks loss/grads for NaN/Inf
+   *before* they reach the optimizer, skipping just that one step instead of poisoning the
+   whole run. Verified directly against the known-bad step before re-running at scale.
+   Also fixed `val_loss()`, which had the identical bug (one bad validation example turned
+   the whole averaged val_loss NaN even though the model itself was fine) — now excludes
+   NaN/Inf terms from the average instead of propagating them.
+Re-ran the full retrain (rank=4/alpha=0.5/lr=5e-5, 768x1024, `caffeinate`-wrapped, guard
+active): completed cleanly in 20195s (~5.6hrs), 36/2280 steps skipped (~1.6%) across ~20
+distinct images — several repeat in both epochs, confirming it's deterministic per-image,
+not random. Result: **micro-F1 0.525 -> 0.724**, non-overlapping 95% CIs
+([0.497,0.557] vs. [0.694,0.749]) — every field improved, `line_items.name`/`price`
+(the dominant failure bucket) most of all (+0.244/+0.245). The three specific
+previously-catastrophic receipts (gold=50/27/23 line items, pred=0 each) now read
+gold=50→pred=49, gold=27→pred=27 (exact), gold=23→pred=22. `line_items` row-level
+missing+hallucinated dropped from 2251-2289 down to 1300 (-43%). Promoted:
+`checkpoints/retrain_hires/final` → `checkpoints/final`,
+`finetuned_hires_test.jsonl` → `finetuned_test.jsonl` (previous versions kept as
+`_finetuned_test.old_lowres.jsonl` etc.). Updated `train.py`/`zeroshot.py`'s default
+`--image-resize` from 448x448 to 768x1024 so future runs (quantize.py, serve.py) use the
+matching resolution by default rather than silently reverting to the stale one.
+**Learned:** the image-resolution hypothesis turned out to be the real fix, not just "the
+only lever left" — validating it empirically (tiny-subset generation check, then the full
+472-receipt eval/taxonomy comparison) rather than assuming from the diagnosis alone is what
+turned a plausible theory into a confirmed 0.199 micro-F1 gain. Also: a "successful" (exit
+0, no crash) training run is not suffient evidence of a good outcome — this is the second
+time in this project a clean exit hid a completely broken run (the first was the corrupted
+JSON training target; this time NaN-poisoned optimizer state). Both needed inspecting the
+actual loss values/output, not just checking that the process finished.
 
 ### 2026-07-19
 **Built:** #3 `src/zeroshot.py` (zero-shot VLM baseline, Track B). The "zero-shot baseline

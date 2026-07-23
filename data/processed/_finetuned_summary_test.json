@@ -1,27 +1,27 @@
 {
   "split": "test",
   "model": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
-  "adapter_path": "checkpoints/retrain_fixed_data/final",
+  "adapter_path": "checkpoints/retrain_hires/final",
   "receipts": 472,
-  "parse_failures": 10,
+  "parse_failures": 4,
   "field_present": {
-    "store": 438,
-    "date": 401,
-    "tax": 297,
-    "tip": 15,
-    "subtotal": 316,
-    "total": 438
+    "store": 449,
+    "date": 402,
+    "tax": 325,
+    "tip": 10,
+    "subtotal": 326,
+    "total": 443
   },
   "field_missing": {
-    "store": 34,
-    "date": 71,
-    "tax": 175,
-    "tip": 457,
-    "subtotal": 156,
-    "total": 34
+    "store": 23,
+    "date": 70,
+    "tax": 147,
+    "tip": 462,
+    "subtotal": 146,
+    "total": 29
   },
-  "line_items_total": 2186,
-  "line_items_per_receipt_avg": 4.63,
-  "receipts_with_no_line_items": 28,
-  "elapsed_seconds": 2926.3
+  "line_items_total": 2473,
+  "line_items_per_receipt_avg": 5.24,
+  "receipts_with_no_line_items": 18,
+  "elapsed_seconds": 2821.4
 }
