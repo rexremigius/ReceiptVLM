@@ -1,0 +1,103 @@
+{
+  "limit": 60,
+  "split": "test",
+  "tiers": {
+    "FP16": {
+      "tier": "FP16",
+      "repo_id": "mlx-community/Qwen2.5-VL-3B-Instruct-bf16",
+      "fit": true,
+      "n_receipts": 60,
+      "avg_latency_s": 17.81,
+      "peak_memory_gb": 8.78,
+      "micro_f1": 0.8087,
+      "micro_f1_ci95": [
+        0.7621,
+        0.8522
+      ]
+    },
+    "INT8": {
+      "tier": "INT8",
+      "repo_id": "mlx-community/Qwen2.5-VL-3B-Instruct-8bit",
+      "fit": true,
+      "n_receipts": 60,
+      "avg_latency_s": 12.01,
+      "peak_memory_gb": 5.41,
+      "micro_f1": 0.8155,
+      "micro_f1_ci95": [
+        0.769,
+        0.857
+      ]
+    },
+    "INT4": {
+      "tier": "INT4",
+      "repo_id": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
+      "fit": true,
+      "n_receipts": 60,
+      "avg_latency_s": 9.45,
+      "peak_memory_gb": 4.36,
+      "micro_f1": 0.7961,
+      "micro_f1_ci95": [
+        0.7368,
+        0.8503
+      ]
+    },
+    "_significance": {
+      "INT8_vs_FP16": {
+        "mean_diff": 0.006763993057805929,
+        "ci": [
+          -0.0018162298277161204,
+          0.016734021641672703
+        ],
+        "p_approx": 0.128
+      },
+      "INT4_vs_FP16": {
+        "mean_diff": -0.012517324126494731,
+        "ci": [
+          -0.05470795244839288,
+          0.023850702997668338
+        ],
+        "p_approx": 0.584
+      },
+      "INT4_vs_INT8": {
+        "mean_diff": -0.01928131718430066,
+        "ci": [
+          -0.0591805974581453,
+          0.013075374002242013
+        ],
+        "p_approx": 0.32
+      }
+    }
+  },
+  "f1_by_field": {
+    "FP16": {
+      "store": 0.8235294117647058,
+      "date": 0.875,
+      "tax": 0.8045977011494252,
+      "tip": 0.25,
+      "subtotal": 0.8222222222222222,
+      "total": 0.9009009009009009,
+      "line_items.name": 0.8057553956834533,
+      "line_items.price": 0.7885532591414944
+    },
+    "INT8": {
+      "store": 0.8235294117647058,
+      "date": 0.875,
+      "tax": 0.8505747126436781,
+      "tip": 0.25,
+      "subtotal": 0.8444444444444444,
+      "total": 0.918918918918919,
+      "line_items.name": 0.8097982708933719,
+      "line_items.price": 0.7910685805422648
+    },
+    "INT4": {
+      "store": 0.8403361344537815,
+      "date": 0.8958333333333334,
+      "tax": 0.8505747126436781,
+      "tip": 0.28571428571428575,
+      "subtotal": 0.8314606741573033,
+      "total": 0.9090909090909091,
+      "line_items.name": 0.7596017069701281,
+      "line_items.price": 0.7867298578199052
+    }
+  }
+}

@@ -7,7 +7,26 @@ transformers==4.49.0
 datasets==4.5.0
 pillow==10.4.0
 pytesseract==0.3.13
+# eval.py (#5): bootstrap CI / paired-bootstrap (numpy) + McNemar exact test (scipy)
+numpy==2.4.6
+scipy==1.17.1
 # torch/torchvision are only imported by transformers' AutoProcessor class-resolution
 # checks for Qwen2.5-VL — never used for compute, mlx handles that on-device.
 torch==2.8.0
 torchvision==0.23.0
+# serve.py + app/ (#10): not installed on this analysis clone (no live inference here);
+# install on the M5 to actually run the API/UI.
+fastapi==0.139.2
+uvicorn==0.51.0
+streamlit==1.60.0
+plotly==6.9.0
+requests==2.34.2
+# quantize.py (#7): static side-by-side precision x field figure (SKILL.md's explicit
+# reporting requirement) — a standalone PNG, not a Streamlit page, so matplotlib
+# rather than plotly here.
+matplotlib==3.10.9
+# HEIC/HEIF upload support (app/ + serve.py): stock Pillow has no HEIC decoder at all
+# (confirmed empirically, not assumed) -- this registers one. Needed in both processes
+# independently (app/ for the browser preview, serve.py for /infer's model-facing
+# path, since mlx_vlm's own image loader also goes through PIL.Image.open).
+pillow-heif==1.5.0
