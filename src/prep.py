@@ -1,14 +1,3 @@
-"""Deliverable #1 — WildReceipt boxes -> per-receipt JSON in our target schema.
-
-Reads WildReceipt annotation lines (one JSON object per receipt), maps the 25 KIE
-categories onto {store, date, tax, tip, subtotal, total, line_items:[{name,price}]},
-and writes one JSONL record per receipt. Unmapped categories are dropped and counted
-(never guessed). See CLAUDE.md / SKILL.md #1.
-
-Usage:
-    python src/prep.py --split both              # full train + test
-    python src/prep.py --split train --limit 20  # ~20-receipt validation subset
-"""
 from __future__ import annotations
 
 import argparse
@@ -27,7 +16,7 @@ SCALAR_MAP = {
     7: "date",      # Date_value
     17: "subtotal", # Subtotal_value
     19: "tax",      # Tax_value
-    21: "tip",      # Tips_value  (sparse in data — see CLAUDE.md)
+    21: "tip",      # Tips_value  (sparse in data)
     23: "total",    # Total_value
 }
 ITEM_LABEL = 11   # Prod_item_value  -> line_item name

@@ -1,16 +1,10 @@
-# Pins an explicit light theme matching app/streamlit_app.py's palette. Without this,
-# Streamlit auto-detects the browser/OS color-scheme preference and silently renders
-# its native components (buttons, selectboxes, the file uploader) in a dark theme our
-# custom CSS doesn't fully reach (those use Streamlit's own baseweb theme tokens, not
-# our CSS variables) — confirmed via a dark-mode-emulated screenshot: the file
-# uploader's button rendered as a solid black box with invisible text. Since the app
-# also hides Streamlit's header (and with it the theme-toggle menu), there'd be no way
-# for a dark-mode visitor to switch back — pinning light here is the actual fix, not
-# a per-widget CSS chase.
+# Pins a dark base theme matching app/streamlit_app.py's palette so
+# Streamlit's native widgets render dark against our dark surfaces. The light-mode toggle
+# is a CSS override on top of this base.
 [theme]
-base = "light"
-primaryColor = "#2B4C4A"
-backgroundColor = "#FAF7F0"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#1C1B18"
+base = "dark"
+primaryColor = "#22DD8A"
+backgroundColor = "#14161B"
+secondaryBackgroundColor = "#1E212B"
+textColor = "#F4F6FA"
 font = "sans serif"

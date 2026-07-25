@@ -1,30 +1,3 @@
-"""Deliverable #7 — FP16/INT8/INT4 quantization sweep, per field (Track B).
-
-SKILL.md's spec: confirm FP16 fits standalone first (if not, INT8 is the real
-ceiling — report that as a finding, not a failure); reuse #5's eval harness; record
-F1, latency/receipt, and peak memory; and produce one clear side-by-side table/chart
-of precision level x field, as its own labeled figure — not folded into a paragraph.
-
-Same LoRA adapter (`checkpoints/final`, trained once in full precision) is applied on
-top of each precision tier of the SAME base model — only the frozen base weights'
-representation changes between FP16/INT8/INT4. Backing repos (checked against what
-mlx-community actually publishes, not assumed):
-    FP16 -> mlx-community/Qwen2.5-VL-3B-Instruct-bf16
-    INT8 -> mlx-community/Qwen2.5-VL-3B-Instruct-8bit
-    INT4 -> mlx-community/Qwen2.5-VL-3B-Instruct-4bit  (what #3/#4/#8/#9/#10 use)
-
-Each tier runs in its OWN subprocess (`--tier <name>` mode), not just a fresh model
-object in one long-lived process — mlx's peak-memory counter is process-global and
-doesn't reset between model loads, so measuring three tiers back-to-back in one
-process would let an earlier tier's high-water mark contaminate a later tier's
-reading. A subprocess per tier is the actual fix; it's not extra ceremony.
-
-Usage:
-    python src/quantize.py                     # orchestrates all 3 tiers + report
-    python src/quantize.py --tier FP16          # just one tier (used internally too)
-    python src/quantize.py --limit 60           # receipts per tier (default 60 —
-                                                 # a full 472 x 3 tiers is ~5 hours)
-"""
 from __future__ import annotations
 
 import argparse
@@ -36,7 +9,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from train import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # noqa: F401 (DEFAULT_MODEL unused here on purpose — see PRECISIONS)
+from train import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS
 from repair import repair_json
 from zeroshot import normalize, load_image_ids
 import eval as ev
@@ -80,8 +53,7 @@ def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
     try:
         model, processor = load(repo_id, adapter_path=str(ADAPTER_PATH),
                                 processor_config={"trust_remote_code": True})
-    except Exception as e:  # noqa: BLE001 — any load/allocation failure here is the
-                            # exact finding SKILL.md asks this script to surface
+    except Exception as e:  # a load/allocation failure is the "doesn't fit" finding to surface
         meta = {"tier": tier, "repo_id": repo_id, "fit": False,
                 "error": f"{type(e).__name__}: {e}"}
         print(f"  {tier} did not fit / failed to load: {meta['error']}")

@@ -1,33 +1,3 @@
-"""Deliverable #8 — calibrated per-field confidence (Track C, headline result).
-
-SKILL.md's composite: token logprob + arithmetic consistency (subtotal+tax+tip ~=
-total) + format validity — all three real now, scoped to the 6 scalar fields
-(store/date/tax/tip/subtotal/total) plus line items. Line items went through three
-rounds (see PROGRESS.md 2026-07-25/2026-07-26 for before/after distributions at each):
-real per-item format-validity + subtotal-consistency signals replacing an old
-hardcoded 0.6 constant every item shared; then an honest `None` (rendered as an
-"unscored" badge upstream, not a fabricated number) when neither signal fires;
-then per-item token logprob (`line_item_logprob_feature`, mirroring
-`logprob_feature` one level down) as a genuine third signal that varies per item
-even when consistency has nothing to say, plus a total-minus-tax-minus-tip fallback
-anchor (`line_item_consistency`'s `total`/`tax`/`tip` params) for the common case
-where subtotal itself was never predicted.
-
-Calibration split: `test.jsonl` (WildReceipt held-out, 472 receipts) is split in half
-by receipt, seeded, into a calibration half (fits Platt scaling) and a report half —
-everything below (ECE, reliability diagram, risk-coverage curve) is measured only on
-the report half. This is deliberately NOT the same use of test.jsonl that #5 (eval.py)
-reports F1 on: fitting and reporting calibration quality on the same data it was fit
-against would overstate how well-calibrated the result actually is, the same leakage
-concern eval.py itself is careful about between its own bootstrap resamples.
-
-Reuses eval.py's `match`/`normalize_num`/`normalize_text`/`load` — one definition of
-"correct" and "parses", shared with #5/#6, never re-derived here under different rules.
-
-Usage:
-    python src/confidence.py                     # finetuned predictions, seed 0
-    python src/confidence.py --tag zeroshot       # score a different prediction file
-"""
 from __future__ import annotations
 
 import argparse
@@ -97,9 +67,7 @@ def logprob_feature(field: str, pred: dict) -> float | None:
 
 
 # --- line-item confidence -----------------------------------------------------------
-# Real per-item signal, replacing the old hardcoded "0.6 if any items else 0.0"
-# constant (which gave every line item on every receipt the identical badge — see
-# PROGRESS.md 2026-07-25 for the before/after distribution this actually produces).
+# Real per-item signal, replacing the old hardcoded "0.6 if any items else 0.0" constant.
 
 # Two narrow, low-false-positive name-noise checks, kept deliberately small: a broader
 # "stray punctuation ratio" or "asterisk-wrapped" rule was tried first and rejected
@@ -127,12 +95,9 @@ def format_valid_line_item_name(name) -> bool:
 
 
 def line_item_logprob_feature(idx: int, pred: dict) -> float | None:
-    """exp(mean token logprob) for the idx-th line item's `{...}` object in the raw
-    completion — the line-item analog of `logprob_feature` above, one level down
-    (see PROGRESS.md 2026-07-26). None unless the prediction file was generated with
-    `--capture-logprobs` (which now also records `_line_item_logprobs`, one entry per
-    predicted item — see zeroshot.py's `line_item_avg_logprob`) or this item's span
-    wasn't found (e.g. truncated generation).
+    """exp(mean token logprob) for the idx-th line item's `{...}` object — the line-item
+    analog of `logprob_feature`. None unless the prediction file was generated with
+    `--capture-logprobs`, or this item's span wasn't found (e.g. truncated generation).
     """
     lps = pred.get("_line_item_logprobs")
     if lps is None or idx >= len(lps) or lps[idx] is None:
@@ -144,17 +109,13 @@ def line_item_consistency(items: list[dict], subtotal, total=None, tax=None,
                           tip=None) -> dict[int, bool | None]:
     """Per-item consistency: does sum(predicted item prices) reconcile with the
     predicted subtotal, and if not, which single item looks most like the culprit?
-    Checked against real ground truth first (see PROGRESS.md): a null line-item price
-    is NOT always a model miss — ~12% of *gold* line items have no price either (a
-    genuine WildReceipt annotation gap), so a null price gets no consistency opinion
-    at all here, same principle as the tip fix below applied one level down.
+    A null line-item price gets no consistency opinion (~12% of gold items also have no
+    price, so it's not always a miss).
 
-    Falls back to an IMPLIED subtotal (`total - tax - tip`) when `subtotal` itself is
-    missing/unparseable but `total` is present — recovers a real anchor for 121 of 134
-    real receipts that have line items but no predicted subtotal (see PROGRESS.md
-    2026-07-26), which previously got no consistency opinion for any item at all. tax
-    and tip default to 0 only when genuinely absent from the prediction (a receipt can
-    legitimately have zero of either), matching `arithmetic_consistency`'s own tip
+    Falls back to an IMPLIED subtotal (`total - tax - tip`) when `subtotal` is missing
+    but `total` is present. tax and tip default to 0 only when genuinely absent from the
+    prediction (a receipt can legitimately have zero of either), matching
+    `arithmetic_consistency`'s own tip
     convention above.
 
     Returns {item_index: True} for every priced item once the aggregate already
@@ -193,16 +154,9 @@ def line_item_consistency(items: list[dict], subtotal, total=None, tax=None,
 
 
 def line_item_raw_score(item: dict, consistency_flag: bool | None) -> float | None:
-    """Raw heuristic score in [0, 1] for one predicted line item, or None if there's
-    nothing this signal can say about it. Two distinct reasons collapse to None here
-    (callers tell them apart by checking `item.get("price")` themselves — see
-    `_line_item_badges`): no price to have an opinion about at all (its own state,
-    see `line_item_consistency`'s docstring), or a price *is* present and the name
-    format is fine, but no consistency signal exists for this receipt/item (the old
-    code returned a flat 0.6 here, which is what made every item on 86.8% of
-    multi-item receipts show an identical badge — see PROGRESS.md 2026-07-26 for the
-    before/after; the honest answer when there's genuinely no signal is "no opinion",
-    not a fabricated middling number).
+    """Raw heuristic score in [0, 1] for one predicted line item, or None when there's
+    nothing to say — either no price at all, or a valid price+name but no consistency
+    signal for this receipt. Callers tell the two apart via `item.get("price")`.
     """
     if item.get("price") is None:
         return None
@@ -315,16 +269,10 @@ def collect(gold_by_id: dict, pred_by_id: dict, ids: list[str], use_logprob: boo
     correct) shape — "correct" reuses eval.py's own `align_line_items` alignment plus
     its `match()` on both name and price, the identical definition #5/#6 score
     against, so "correct" never means something different here than it does there.
-    Items with a null price are excluded outright — nothing to have an opinion about
-    at all (see `line_item_raw_score`'s docstring). Items with a price but no
-    heuristic signal (no consistency check possible for this receipt) are excluded
-    too UNLESS `use_li_logprob` is set, in which case per-item token logprob (real
-    once `--capture-logprobs` was used to generate this file — see
-    `line_item_logprob_feature`) becomes a genuine second feature, imputing a neutral
-    0.5 for whichever half is missing on a given item, the same convention as scalar
-    fields above. This is what stops line-item confidence from degenerating to one
-    shared badge per receipt even when subtotal-consistency has nothing to say (see
-    PROGRESS.md 2026-07-26).
+    Items with a null price are excluded outright. Items with a price but no heuristic
+    signal are excluded too, UNLESS `use_li_logprob` is set — then per-item token
+    logprob becomes a second feature (imputing a neutral 0.5 for the missing half),
+    which stops line-item confidence from degenerating to one shared badge per receipt.
     """
     per_field = defaultdict(list)
     for rid in ids:

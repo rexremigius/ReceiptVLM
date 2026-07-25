@@ -1,20 +1,3 @@
-"""Hyperparameter sweep driver for #4 train.py (Person B's fine-tuning lane).
-
-Coordinate-descent sweep over LoRA rank -> alpha -> lr (one dimension at a time, not
-full 3x3x3 grid search) on a fast ~250-receipt subset, so ~7 short runs stand in for
-what a full-grid sweep on the full dataset would cost. Each round fixes the winner(s)
-from the previous round and only varies the fastest-changing values that weren't
-already covered by an earlier run — this keeps total sweep runs to ~7 instead of 27.
-Winning config is then confirmed with one full run on all 1140 train receipts.
-
-All trial checkpoints go under checkpoints/sweep/<config>/ and the final confirmation
-run under checkpoints/sweep_best/ — neither touches checkpoints/final (the existing
-validated checkpoint already used for data/processed/finetuned_test.jsonl). Promoting
-the sweep-confirmed checkpoint to checkpoints/final is a manual, separate decision.
-
-Usage:
-    python src/sweep.py
-"""
 from __future__ import annotations
 
 import json

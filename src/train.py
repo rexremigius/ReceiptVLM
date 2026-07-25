@@ -1,20 +1,3 @@
-"""Deliverable #4 — QLoRA fine-tune of Qwen2.5-VL-3B (fallback SmolVLM2-2.2B) via MLX-VLM.
-
-Loads a 4-bit-quantized MLX checkpoint, freezes it, and trains LoRA adapters on top
-(mlx_vlm.trainer.LoRaLayer wraps the frozen QuantizedLinear layers directly — that's
-QLoRA, not LoRA-then-downgrade). Loss is masked to the assistant's JSON completion only
-(train_on_completions), so the model isn't trained to predict the prompt/image tokens.
-See CLAUDE.md / SKILL.md #4.
-
-Environment note: requires transformers==4.49.0 (not the latest). Newer transformers
-(4.5x) made Qwen2's image processor "fast"-only, which hard-requires PyTorch tensors —
-incompatible with mlx_vlm's own tensor backend. See requirements.txt.
-
-Usage:
-    python src/train.py --limit 20                  # tiny-subset validation run (spec-required first step)
-    python src/train.py                              # full QLoRA fine-tune on data/processed/train.jsonl
-    python src/train.py --model mlx-community/SmolVLM2-2.2B-Instruct-4bit  # fallback if 3B has no headroom
-"""
 from __future__ import annotations
 
 import argparse

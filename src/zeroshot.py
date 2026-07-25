@@ -1,20 +1,3 @@
-"""Deliverable #3 — zero-shot VLM baseline (no LoRA adapter), Track B.
-
-Runs the base model (same prompt/schema `train.py` fine-tunes towards) on WildReceipt
-test-split receipts, so there's a real "before fine-tuning" number to compare the QLoRA
-checkpoint against in eval.py. Output is the same schema/JSONL convention as prep.py (#1)
-and baseline.py (#2) — a prediction file eval.py can consume identically regardless of
-which pipeline produced it. See CLAUDE.md / SKILL.md #3.
-
-Also doubles as the fine-tuned-model prediction generator (--adapter-path): same prompt,
-same generation code, so zero-shot and fine-tuned predictions are directly comparable —
-only difference is whether LoRA adapters are applied on load.
-
-Usage:
-    python src/zeroshot.py --limit 20                                  # quick subset check
-    python src/zeroshot.py                                             # full test split, base model
-    python src/zeroshot.py --adapter-path checkpoints/final --tag finetuned  # fine-tuned predictions
-"""
 from __future__ import annotations
 
 import argparse
@@ -156,9 +139,8 @@ def line_item_spans(text: str) -> list[tuple[int, int]]:
 
 def line_item_avg_logprob(idx: int, text: str, chunks: list) -> float | None:
     """Average token logprob over the characters spanning the `idx`-th line item's
-    `{...}` object in the raw JSON text — #8's third signal, extended one level down
-    from per-field to per-item (see PROGRESS.md 2026-07-26). None if the array wasn't
-    found or has fewer than `idx + 1` objects (e.g. truncated generation).
+    `{...}` object in the raw JSON text. None if the array wasn't found or has fewer
+    than `idx + 1` objects (e.g. truncated generation).
     """
     spans = line_item_spans(text)
     if idx >= len(spans):

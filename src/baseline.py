@@ -1,15 +1,3 @@
-"""Deliverable #2 — OCR + regex extraction baseline (Track A).
-
-Runs Tesseract OCR over the same receipts #1 (prep.py) already processed, then pulls
-{store, date, tax, tip, subtotal, total, line_items:[{name,price}]} out of the raw OCR
-text with keyword-anchored regexes — no layout/box information, unlike prep.py which
-reads WildReceipt's ground-truth boxes. This is the non-ML floor #5 (eval.py) compares
-the fine-tuned VLM against. See CLAUDE.md / SKILL.md #2.
-
-Usage:
-    python src/baseline.py --split test               # full test split
-    python src/baseline.py --split train --limit 20   # ~20-receipt validation subset
-"""
 from __future__ import annotations
 
 import argparse

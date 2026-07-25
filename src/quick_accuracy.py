@@ -1,14 +1,3 @@
-"""Quick, rough per-field accuracy check — NOT the real eval harness.
-
-Person A owns the actual #5 eval.py (per-field micro-F1, bootstrap CI, paired
-significance test). This script exists only to give an early accuracy signal on the
-already-generated baseline/zero-shot/fine-tuned predictions against #1's ground truth,
-using plain exact-match — no CI, no significance test, no formal line-item matching
-algorithm. Treat these numbers as directional, not final.
-
-Usage:
-    python src/quick_accuracy.py
-"""
 from __future__ import annotations
 
 import json

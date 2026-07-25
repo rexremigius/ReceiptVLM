@@ -1,18 +1,3 @@
-"""Failure taxonomy for receipt KIE predictions.
-
-Classifies every field-level disagreement between gold and a prediction file
-into a specific failure type (not just "wrong"), then reports counts per
-field x category plus a handful of example records per category.
-
-Reuses eval.py's normalization, matching, and line-item alignment so a value
-is never counted as an "error" here under different rules than it was
-scored under there — one shared definition of match, in one place.
-
-Usage:
-    python taxonomy.py --gold gold.jsonl --pred finetuned.jsonl
-    python taxonomy.py                     # synthetic smoke test
-"""
-
 import argparse
 import difflib
 import json

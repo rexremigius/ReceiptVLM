@@ -1,24 +1,10 @@
-"""Deliverable #10 (Streamlit half) — talks to `src/serve.py` over HTTP.
-
-Run (from repo root, two terminals):
-    uvicorn src.serve:app --port 8000
-    streamlit run app/streamlit_app.py
-
-UPDATED 2026-07-24: UI redesign pass (CSS/layout/copy only — no change to API calls or
-data wiring). This is a reviewer tool for scanning many receipts quickly, not a
-landing page: compact header, dense two-column body, per-row line-item confidence,
-badge-consistent status pills throughout. See PROGRESS.md for the before/after
-screenshots and self-critique.
-
-Uploading a photo or pasting an image URL runs *live* inference via serve.py's
-`/infer` (real model + #9 repair + #8's full 3-signal confidence). The "Dataset
-(cached)" option reads the fast pre-computed predictions (2-signal confidence,
-matching what #5/#6 report against).
-"""
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import os
+import sys
 
 import plotly.graph_objects as go
 import requests
@@ -26,242 +12,154 @@ import streamlit as st
 from PIL import Image
 import pillow_heif
 
-# Stock Pillow has no HEIC/HEIF decoder at all (confirmed empirically, not assumed —
-# Image.open() on a real HEIC file raises without this). iPhone photos default to
-# HEIC, so this is the realistic case for someone actually photographing a receipt,
-# not an edge case. mlx_vlm's own image loader also goes through PIL.Image.open, so
-# serve.py needs this same registration independently (a separate process).
-pillow_heif.register_heif_opener()
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.display_format import format_item_name
+from src.categorize import infer_category
+
+pillow_heif.register_heif_opener()  # stock Pillow can't decode iPhone HEIC
 
 API_BASE = "http://127.0.0.1:8000"
 
 FIELD_LABELS = {"store": "Store", "date": "Date", "tax": "Tax", "tip": "Tip",
                 "subtotal": "Subtotal", "total": "Total"}
-# Copy-only display labels for serve.py's repair_status values — the raw strings
-# (e.g. "handled_upstream_at_generation") are accurate but too long/technical for a
-# compact badge; this maps to short labels without touching the underlying data.
-REPAIR_LABELS = {
-    "clean": "clean", "handled_upstream_at_generation": "n/a (cached)",
-    "repaired_trailing_comma": "repaired", "repaired_python_literal": "repaired",
-    "repaired_truncation": "repaired", "hard_failure": "failed",
-}
 
-# --- design tokens: receipt-paper grounded, not default Streamlit ------------------
-BG = "#FAF7F0"           # warm paper, not pure white
-SURFACE = "#FFFFFF"
-BORDER = "#E8E2D4"       # subtle paper-edge feel
-TEXT_PRIMARY = "#1C1B18"  # warm near-black, not pure #000
-TEXT_SECONDARY = "#6B6659"
-ACCENT = "#2B4C4A"        # deep teal — replaces Streamlit's default blue everywhere
-STATUS = {
-    "green":   {"fg": "#3A6B4A", "bg": "#E8F0E5"},
-    "amber":   {"fg": "#A9752E", "bg": "#FBF0DE"},
-    "red":     {"fg": "#A33D3D", "bg": "#F7E6E6"},
-    # "na" = legitimately no value (nothing to be confident about); "missing" = a
-    # null field that's almost always a real gap (currently just `store` — see
-    # PROGRESS.md 2026-07-25). "missing" reuses red's fg/bg since it's still a real
-    # concern, just labeled "missing" instead of a fabricated numeric score.
-    "na":      {"fg": "#8A8578", "bg": "#EFEDE7"},
-    "missing": {"fg": "#A33D3D", "bg": "#F7E6E6"},
-    # "unscored" = line item, only: a value IS present and looks well-formed, but no
-    # consistency signal exists to judge it against (see src/serve.py's
-    # _unscored_badge). Same neutral gray as "na" — both mean "no numeric score",
-    # just for a different reason — deliberately not a color that reads as good/bad.
-    "unscored": {"fg": "#8A8578", "bg": "#EFEDE7"},
+# Category colors validated CVD-safe against each mode's surface, assigned per category.
+THEMES = {
+    "Dark": {
+        "bg": "#14161B", "surface": "#1E212B", "surface2": "#262A35", "border": "#2C313D",
+        "text": "#F4F6FA", "text2": "#9BA3B2", "text_muted": "#6B7280",
+        "green": "#22DD8A", "on_green": "#0B1F16",
+        "hero_grad": "linear-gradient(145deg, #1F2A26 0%, #1E212B 55%)",
+        "cats": {"dining": "#60A5FA", "grocery": "#34D399", "fuel": "#FB923C", "retail": "#C084FC",
+                 "transport": "#FACC15", "misc": "#F472B6", "other": "#94A3B8"},
+    },
+    "Light": {
+        "bg": "#F4F6F9", "surface": "#FFFFFF", "surface2": "#EEF1F6", "border": "#E3E8EF",
+        "text": "#14213B", "text2": "#566175", "text_muted": "#8A94A6",
+        "green": "#12B76A", "on_green": "#FFFFFF",
+        "hero_grad": "linear-gradient(145deg, #E8F7EF 0%, #FFFFFF 55%)",
+        "cats": {"dining": "#2563EB", "grocery": "#059669", "fuel": "#EA580C", "retail": "#7C3AED",
+                 "transport": "#A16207", "misc": "#DB2777", "other": "#64748B"},
+    },
 }
-STATUS_LABELS = {"na": "not applicable", "missing": "missing", "unscored": "no signal"}
-GRID_COLOR = BORDER
-CHART_SURFACE = SURFACE
-SERIES_BLUE = "#2a78d6"   # chart series color — a separate dataviz decision, left as
-                          # the existing validated categorical hue (not the UI accent)
-FONT_SANS = ("'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif")
-FONT_MONO = ("'JetBrains Mono', 'IBM Plex Mono', ui-monospace, "
-            "'SFMono-Regular', Menlo, Consolas, monospace")
+FONT_SANS = "'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+FONT_MONO = "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace"
 
 st.set_page_config(page_title="ReceiptVLM", layout="wide")
 
-st.markdown(f"""
+if "theme" not in st.session_state:
+    st.session_state.theme = "Dark"
+
+
+def inject_css(T: dict) -> None:
+    st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root {{
-  --bg: {BG}; --surface: {SURFACE}; --border: {BORDER};
-  --text-primary: {TEXT_PRIMARY}; --text-secondary: {TEXT_SECONDARY}; --accent: {ACCENT};
-  --font-sans: {FONT_SANS};
-  --font-mono: {FONT_MONO};
+  --bg:{T['bg']}; --surface:{T['surface']}; --surface-2:{T['surface2']}; --border:{T['border']};
+  --text-primary:{T['text']}; --text-secondary:{T['text2']}; --text-muted:{T['text_muted']};
+  --green:{T['green']}; --on-green:{T['on_green']}; --hero-grad:{T['hero_grad']};
+  --font-sans:{FONT_SANS}; --font-mono:{FONT_MONO};
 }}
-
-/* page canvas — Streamlit's own header toolbar (Deploy button, hamburger menu) is
-   `position: absolute`, 60px tall, and was physically covering our compact wordmark
-   when top padding was reduced below its height. It's irrelevant chrome for an
-   internal reviewer tool, so hide it outright rather than just clear it. Theme
-   (dark/light) is pinned explicitly in .streamlit/config.toml — this CSS assumes
-   that theme, it doesn't fight a possibly-different one. */
-[data-testid="stAppViewContainer"], [data-testid="stMain"] {{ background: var(--bg); }}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stMainBlockContainer"], [data-testid="stBottomBlockContainer"] {{ background: var(--bg) !important; }}
 [data-testid="stHeader"] {{ display: none; }}
-[data-testid="stMainBlockContainer"] {{
-  padding-top: 1rem; max-width: 1320px;
-}}
-html, body, [data-testid="stAppViewContainer"] {{
-  color: var(--text-primary); font-family: var(--font-sans);
-}}
-/* NOT a blanket `*` — Streamlit's icon buttons (upload icon, etc.) render their glyph
-   as literal ligature text in a dedicated icon font (e.g. the upload button's actual
-   DOM text is the word "upload", turned into a glyph only by that font). Forcing
-   Inter onto it made the ligature render as literal readable text next to the real
-   "Upload" label — a real visible bug, caught by inspecting the button's rendered
-   HTML after screenshotting, not by reading the CSS alone. Excluding icon elements
-   from the inheritance fixes it without giving up the font override everywhere else. */
+[data-testid="stMainBlockContainer"] {{ padding-top: 1.4rem; max-width: 1180px; }}
+html, body, [data-testid="stAppViewContainer"] {{ color: var(--text-primary); font-family: var(--font-sans); }}
 [data-testid="stAppViewContainer"] *:not([data-testid="stIconMaterial"]) {{ font-family: inherit; }}
+/* dark config base sets white text on markdown containers; force theme color so light mode is readable */
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdown"],
+[data-testid="stText"], [data-testid="stHeading"] {{ color: var(--text-primary) !important; }}
+[data-testid="stSelectbox"] div, [data-baseweb="select"] div, [data-testid="stSpinner"] div {{ color: var(--text-primary); }}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color: var(--text-muted) !important; }}
 
-/* alerts (st.info/warning/error) — restyled to the paper palette; Streamlit's
-   default blue/orange/red alert backgrounds otherwise clash hard with the warm
-   background and would be the one remaining "default Streamlit" look on the page.
-   The visible background actually lives on stAlertContainer (the outer wrapper),
-   not stAlertContentInfo/Warning/Error (an inner inset panel) — styling only the
-   inner one left Streamlit's default blue outer tint showing around a white inset,
-   a layered look caught by checking computed background-color on both elements
-   rather than assuming the first testid found was the right one. `:has()` lets the
-   container pick up the right treatment based on which content type it wraps. */
-div[data-testid="stAlertContainer"]:has(div[data-testid="stAlertContentInfo"]) {{
-  background: var(--surface) !important; border: 1px solid var(--border) !important;
-  border-left: 3px solid var(--accent) !important; border-radius: 6px;
-}}
-div[data-testid="stAlertContainer"]:has(div[data-testid="stAlertContentWarning"]) {{
-  background: {STATUS["amber"]["bg"]} !important; border: 1px solid {STATUS["amber"]["fg"]}40 !important;
-  border-left: 3px solid {STATUS["amber"]["fg"]} !important; border-radius: 6px;
-}}
-div[data-testid="stAlertContainer"]:has(div[data-testid="stAlertContentError"]) {{
-  background: {STATUS["red"]["bg"]} !important; border: 1px solid {STATUS["red"]["fg"]}40 !important;
-  border-left: 3px solid {STATUS["red"]["fg"]} !important; border-radius: 6px;
-}}
-div[data-testid="stAlertContentInfo"], div[data-testid="stAlertContentWarning"],
-div[data-testid="stAlertContentError"] {{ background: transparent !important; }}
-div[data-testid="stAlertContentInfo"] p, div[data-testid="stAlertContentWarning"] p,
-div[data-testid="stAlertContentError"] p {{ color: var(--text-primary) !important; font-size: 0.85rem; }}
-div[data-testid="stAlertContentInfo"] svg, div[data-testid="stAlertContentWarning"] svg,
-div[data-testid="stAlertContentError"] svg {{ fill: var(--accent) !important; }}
+.brand-mark {{ font-size: clamp(2rem, 5.5vw, 2.7rem); font-weight: 800; letter-spacing: -0.02em; color: var(--text-primary) !important; margin: 0 !important; line-height: 1.1; }}
+.brand-mark .dot {{ color: var(--green); }}
+.brand-tag {{ font-size: 0.9rem; color: var(--text-secondary); margin: 0.1rem 0 0 0 !important; }}
 
-/* wordmark: clearly the largest text on the page, with real breathing room before
-   the tab row beneath it — not just marginally bigger than the tab labels.
-   `!important` needed: it's rendered as `[data-testid="stMarkdownContainer"] p`,
-   and that attribute+element selector otherwise out-specifies a plain `.app-wordmark`
-   class selector, silently resetting font-size back to Streamlit's default 16px —
-   confirmed via computed style, not assumed, after a size bump visually did nothing. */
-.app-wordmark {{
-  font-size: 2.5rem !important; font-weight: 700 !important; letter-spacing: 0.01em;
-  color: var(--text-primary) !important; margin: 0 0 0.9rem 0 !important; line-height: 1.2 !important;
-}}
+div[data-testid="stAlertContainer"] {{ background: var(--surface) !important; border: 1px solid var(--border) !important; border-left: 3px solid var(--green) !important; border-radius: 14px; }}
+div[data-testid="stAlertContainer"] p {{ color: var(--text-secondary) !important; font-size: 0.9rem; }}
+div[data-testid="stAlertContainer"] svg {{ fill: var(--green) !important; }}
 
-/* tabs: small, underline-style, no oversized default font/padding */
-[data-testid="stTabs"] {{ margin-top: 0; }}
-div[data-testid="stTab"] {{
-  padding: 0.25rem 0.1rem 0.5rem 0.1rem !important;
-  margin-right: 1.1rem !important;
-  font-size: 0.85rem !important;
-}}
-div[data-testid="stTab"] p {{ font-size: 0.85rem !important; font-weight: 500; color: var(--text-secondary); }}
-div[data-testid="stTab"][aria-selected="true"] p {{ color: var(--text-primary); font-weight: 700; }}
+/* tab spacing via flex gap — reliable whether the tab is a div or a button */
+[data-testid="stTabs"] [role="tablist"] {{ border-bottom: 1px solid var(--border); gap: 2.75rem !important; }}
+div[data-testid="stTab"], button[data-baseweb="tab"] {{ padding: 0.35rem 0.2rem 0.7rem !important; margin-right: 0 !important; }}
+div[data-testid="stTab"] p {{ font-size: 0.95rem !important; font-weight: 600; color: var(--text-muted); }}
+div[data-testid="stTab"][aria-selected="true"] p {{ color: var(--text-primary); }}
 div[data-testid="stTab"] .react-aria-SelectionIndicator,
-div[data-testid="stTab"][data-selected="true"]::after {{ background: var(--accent) !important; }}
-[data-testid="stTabs"] [role="tablist"] {{ border-bottom: 1px solid var(--border); gap: 0; }}
+div[data-testid="stTab"][data-selected="true"]::after {{ background: var(--green) !important; }}
 
-/* section dividers use the hairline border, not Streamlit's heavier default */
-hr {{ border-color: var(--border) !important; margin: 0.6rem 0 !important; }}
-
-/* segmented pill toggle (built from st.radio) — accent is the deep teal, never the
-   Streamlit-default blue/red */
-div[data-testid="stRadioGroup"] {{
-  display: inline-flex; gap: 2px; background: var(--bg);
-  border: 1px solid var(--border); border-radius: 8px; padding: 2px;
-}}
+div[data-testid="stRadioGroup"] {{ display: inline-flex; gap: 3px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px; }}
 label[data-testid="stRadioOption"] {{ margin: 0 !important; min-height: 0 !important; }}
-label[data-testid="stRadioOption"] > div > div > div:not([data-testid="stMarkdownContainer"]) {{
-  display: none;  /* hide the default radio-circle indicator */
-}}
-label[data-testid="stRadioOption"] div[data-testid="stMarkdownContainer"] p {{
-  padding: 0.25rem 0.7rem; border-radius: 6px; margin: 0;
-  font-size: 0.8rem; color: var(--text-secondary); white-space: nowrap;
-}}
-label[data-testid="stRadioOption"][data-selected="true"] div[data-testid="stMarkdownContainer"] p {{
-  background: var(--accent); color: #ffffff; font-weight: 600;
-}}
+label[data-testid="stRadioOption"] > div > div > div:not([data-testid="stMarkdownContainer"]) {{ display: none; }}
+label[data-testid="stRadioOption"] div[data-testid="stMarkdownContainer"] p {{ padding: 0.32rem 0.95rem; border-radius: 999px; margin: 0; font-size: 0.83rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }}
+label[data-testid="stRadioOption"][data-selected="true"] div[data-testid="stMarkdownContainer"] p {{ background: var(--green); color: var(--on-green); }}
 
-/* compact widget labels */
-[data-testid="stWidgetLabel"] p {{ font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.15rem; }}
-[data-testid="stSelectbox"] > div > div {{ font-size: 0.85rem; }}
+[data-testid="stWidgetLabel"] p {{ font-size: 0.82rem; color: var(--text-secondary); }}
+[data-testid="stSelectbox"] > div > div {{ font-size: 0.9rem; background: var(--surface); border-radius: 12px; border-color: var(--border); }}
+[data-testid="stCheckbox"] p {{ color: var(--text-secondary); font-size: 0.85rem; }}
+[data-baseweb="popover"] [role="listbox"], [data-baseweb="menu"], ul[role="listbox"] {{ background: var(--surface) !important; }}
+[data-baseweb="popover"] li, ul[role="listbox"] li {{ color: var(--text-primary) !important; }}
+[data-baseweb="popover"] li:hover {{ background: var(--surface-2) !important; }}
 
-/* status pill badges — ONE consistent shape/padding/type treatment for every badge
-   on the page (confidence, repair layer, n/a, caveat): mono face (this is itself a
-   piece of "data read off the receipt or the model", same logic as field values),
-   same size, same padding, same pill radius, regardless of which status it shows. */
-.status-pill {{
-  display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px;
-  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 600;
-  line-height: 1.5; white-space: nowrap;
-}}
+.panel {{ background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 1.3rem 1.5rem; margin-top: 0.3rem; }}
+.panel .field-row:last-child {{ border-bottom: none; }}
 
-/* field-table rows: tighten and align. ONE header style (uppercase, tracked) shared
-   by both the scalar-fields table and the line-items table — no casing mismatch. */
-.field-row {{
-  display: grid; grid-template-columns: 130px 1fr 130px; align-items: center;
-  padding: 0.32rem 0; border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
-}}
-.field-row.with-gt {{ grid-template-columns: 130px 1fr 130px 1fr; }}
-.field-row.header {{
-  font-family: var(--font-sans); font-size: 0.72rem; text-transform: uppercase;
-  letter-spacing: 0.04em; font-weight: 600;
-  color: var(--text-secondary); border-bottom: 1px solid var(--text-secondary);
-  padding-bottom: 0.4rem;
-}}
-.field-name {{ color: var(--text-secondary); font-family: var(--font-sans); }}
-.field-value {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
-.field-gt {{ color: var(--text-secondary); font-size: 0.8rem; font-family: var(--font-mono); }}
-/* line-item name/price columns are extracted receipt data too (not UI labels like
-   .field-name is for the scalar table), so they get the mono treatment as well */
-.li-name {{ font-family: var(--font-mono); }}
-.li-price {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
+.hero {{ background: var(--hero-grad); border: 1px solid var(--border); border-radius: 22px; padding: 1.6rem 1.8rem; margin-bottom: 1rem; }}
+.hero-label {{ font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }}
+.hero-value {{ font-size: clamp(2.1rem, 7vw, 3rem); font-weight: 800; color: var(--text-primary); line-height: 1.05; margin-top: 0.35rem; font-variant-numeric: tabular-nums; }}
+.hero-value .cur {{ color: var(--green); font-size: 0.6em; font-weight: 700; vertical-align: 0.5em; margin-right: 0.12rem; }}
+.hero-sub {{ font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; }}
 
-/* metadata strip at the bottom of the record */
-.meta-strip {{
-  display: flex; gap: 0.9rem; align-items: center; flex-wrap: wrap;
-  margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--border);
-  font-size: 0.78rem; color: var(--text-secondary);
-}}
+.stat-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.4rem; }}
+.stat-card {{ background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 1.1rem 1.3rem; }}
+.stat-label {{ font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }}
+.stat-value {{ font-size: clamp(1.4rem, 5vw, 1.7rem); font-weight: 800; color: var(--text-primary); margin-top: 0.3rem; font-variant-numeric: tabular-nums; }}
 
-/* receipt image: signature element — a subtle drop shadow + slight rotation, like a
-   physical receipt photographed on a desk, not a plain bounded rectangle. Kept
-   restrained: one shadow, ~1.5deg, a small paper-white mat border around the photo
-   itself (echoing a printed photo's white edge) rather than any further texture. */
-.receipt-image-frame {{
-  display: inline-block; transform: rotate(-1.4deg);
-  background: var(--surface); padding: 8px 8px 14px 8px; border-radius: 3px;
-  box-shadow: 0 10px 22px rgba(28,27,24,0.16), 0 2px 6px rgba(28,27,24,0.10);
-  margin: 6px 0 14px 4px;
-}}
-.receipt-image-frame img {{
-  display: block; max-width: 404px; width: 100%;
-  border: 1px solid var(--border); border-radius: 2px;
-}}
+.section-title {{ font-size: 1.15rem; font-weight: 700; color: var(--text-primary); margin: 1.5rem 0 0.6rem; }}
+.section-sub {{ font-size: 0.82rem; color: var(--text-muted); margin: -0.35rem 0 0.7rem; }}
 
-/* file uploader: tighter, clean dashed border in the new palette, visible icon —
-   the default rendering went solid-black under a dark-mode browser (fixed for real
-   via .streamlit/config.toml pinning a light theme); this styles the light-theme
-   version deliberately rather than leaving it to Streamlit's own defaults. */
-[data-testid="stFileUploaderDropzone"] {{
-  padding: 0.9rem !important; border-radius: 8px !important;
-  border: 1.5px dashed var(--border) !important; background: var(--surface) !important;
-}}
-[data-testid="stFileUploaderDropzone"] svg {{ fill: var(--accent) !important; opacity: 0.8; }}
-[data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0.78rem; color: var(--text-secondary); }}
-[data-testid="stBaseButton-secondary"] {{
-  background: var(--surface) !important; color: var(--accent) !important;
-  border: 1px solid var(--accent) !important;
-}}
+.chip {{ display: inline-block; padding: 0.12rem 0.6rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }}
 
-/* section captions */
-.section-caption {{ font-size: 0.76rem; color: var(--text-secondary); margin: 0 0 0.4rem 0; }}
+.field-row {{ display: grid; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; grid-template-columns: 130px 1fr; gap: 0.6rem; }}
+.field-row.with-gt {{ grid-template-columns: 120px 1fr 1fr; }}
+.field-row.header {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }}
+.field-name {{ color: var(--text-secondary); }}
+.field-value {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-primary); word-break: break-word; }}
+.field-gt {{ color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-mono); word-break: break-word; }}
+.li-name {{ color: var(--text-primary); font-weight: 500; word-break: break-word; }}
+.li-price {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-primary); font-weight: 600; }}
+.li-head {{ margin: 1.3rem 0 0.4rem; font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }}
+.txn {{ display: grid; grid-template-columns: minmax(0,1.4fr) auto minmax(0,1fr) auto; gap: 0.8rem; align-items: center; padding: 0.7rem 0; border-bottom: 1px solid var(--border); }}
+.txn:last-child {{ border-bottom: none; }}
+.txn-store {{ font-weight: 700; color: var(--text-primary); font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.txn-date {{ color: var(--text-muted); font-size: 0.82rem; }}
+.txn-amt {{ text-align: right; font-weight: 700; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }}
+
+.receipt-frame {{ display: inline-block; background: var(--surface); padding: 8px; border-radius: 18px; border: 1px solid var(--border); margin: 4px 0 12px; max-width: 100%; }}
+.receipt-frame img {{ display: block; max-width: 380px; width: 100%; border-radius: 12px; }}
+
+[data-testid="stFileUploaderDropzone"] {{ padding: 1.1rem !important; border-radius: 16px !important; border: 1.5px dashed var(--border) !important; background: var(--surface) !important; }}
+[data-testid="stFileUploaderDropzone"] svg {{ fill: var(--green) !important; }}
+[data-testid="stFileUploaderDropzoneInstructions"] span {{ font-size: 0.82rem; color: var(--text-secondary); }}
+[data-testid="stBaseButton-secondary"] {{ background: var(--green) !important; color: var(--on-green) !important; border: none !important; font-weight: 700 !important; border-radius: 999px !important; }}
+/* -webkit-text-fill-color beats a plain color on inputs, else typed text stays white in light mode */
+[data-testid="stTextInput"] input, [data-baseweb="input"] input, [data-baseweb="base-input"] input {{
+  background: var(--surface) !important; border-radius: 12px !important; border-color: var(--border) !important;
+  color: var(--text-primary) !important; -webkit-text-fill-color: var(--text-primary) !important;
+}}
+[data-testid="stTextInput"] input::placeholder {{ color: var(--text-muted) !important; -webkit-text-fill-color: var(--text-muted) !important; }}
+
+@media (max-width: 680px) {{
+  [data-testid="stMainBlockContainer"] {{ padding-left: 0.6rem; padding-right: 0.6rem; }}
+  .stat-grid {{ grid-template-columns: 1fr; }}
+  .panel, .hero {{ padding: 1.1rem 1.1rem; }}
+  [data-testid="stTabs"] [role="tablist"] {{ gap: 1.5rem !important; }}
+  .field-row {{ grid-template-columns: 96px 1fr !important; }}
+  .field-row.with-gt {{ grid-template-columns: 90px 1fr 1fr !important; }}
+  .txn {{ grid-template-columns: 1fr auto; gap: 0.4rem 0.6rem; }}
+  .txn-date {{ display: none; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -274,129 +172,101 @@ def fetch_receipts():
 
 
 def fetch_receipt(image_id: str, include_gt: bool):
-    r = requests.get(f"{API_BASE}/receipts/{image_id}",
-                      params={"include_gt": include_gt}, timeout=10)
+    r = requests.get(f"{API_BASE}/receipts/{image_id}", params={"include_gt": include_gt}, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
 def fetch_infer(image_bytes: bytes, filename: str):
-    r = requests.post(f"{API_BASE}/infer",
-                      files={"file": (filename, image_bytes)}, timeout=120)
+    # NOT cached: /infer appends to the backend's Overview list, and a cache hit would skip
+    # that append. Rerun de-dup is handled by the caller via a per-file hash in session_state.
+    r = requests.post(f"{API_BASE}/infer", files={"file": (filename, image_bytes)}, timeout=120)
     r.raise_for_status()
     return r.json()
 
 
 def fetch_dashboard():
-    # No @st.cache_data here on purpose — this is a real-time view over receipts
-    # actually uploaded and analyzed this session (see serve.py's LIVE_RECEIPTS), so
-    # a cache would show stale data right after the receipt you just analyzed.
-    # Aggregating an in-memory list this small is cheap; there's nothing to cache.
     r = requests.get(f"{API_BASE}/dashboard", timeout=10)
     r.raise_for_status()
     return r.json()
 
 
-def pill(text: str, level: str) -> str:
-    s = STATUS.get(level, STATUS["red"])
-    return (f'<span class="status-pill" style="background:{s["bg"]};color:{s["fg"]};'
-            f'border:1px solid {s["fg"]}40">{text}</span>')
+def fetch_categories():
+    r = requests.get(f"{API_BASE}/categories", timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
-def confidence_pill(level: str, score: float | None) -> str:
-    if score is None:
-        return pill(STATUS_LABELS.get(level, level), level)
-    return pill(f"{level} · {score:.2f}", level)
+def category_chip(cat: str, T: dict) -> str:
+    color = T["cats"].get(cat, T["cats"]["other"])
+    return f'<span class="chip" style="background:{color}22;color:{color};">{cat.title()}</span>'
+
+
+def stat_card(label: str, value: str) -> str:
+    return f'<div class="stat-card"><div class="stat-label">{label}</div><div class="stat-value">{value}</div></div>'
 
 
 def image_data_uri(image_bytes: bytes) -> str:
-    """Embed the receipt photo as a single <img> tag (base64 data URI) rather than
-    st.image — the signature rotated/drop-shadow "receipt-image-frame" treatment
-    needs the image and its wrapper in ONE HTML fragment. Three separate st.markdown/
-    st.image calls (open tag / image / close tag) do NOT nest in Streamlit's DOM —
-    each becomes its own sibling element — so the wrapper CSS silently never reached
-    the image at all (confirmed via computed styles: transform was "none").
-
-    No blind format fallback: the format is always identified from the real file
-    content (Pillow's own sniffing), never assumed to be JPEG. HEIC/HEIF is a real
-    case now (iPhone photos default to it), and it needs its own handling regardless
-    of decoding: Chrome/Firefox don't render HEIC via <img> at all (only Safari has
-    partial support), so even a correctly-decoded HEIC image would show as broken in
-    most browsers. It's re-encoded to real JPEG bytes here — a genuine conversion, not
-    a relabel — so the preview actually renders; the *model* gets the original bytes
-    untouched via serve.py's /infer, since mlx_vlm decodes HEIC natively once the same
-    opener is registered there.
-    """
+    """One base64 <img> so the framed wrapper and image live in a single HTML fragment.
+    HEIC is re-encoded to JPEG (browsers can't render it via <img>); the model gets the
+    original bytes through serve.py."""
     img = Image.open(io.BytesIO(image_bytes))
     fmt = img.format
     if fmt in ("HEIF", "HEIC"):
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="JPEG")
-        image_bytes = buf.getvalue()
-        fmt = "JPEG"
+        image_bytes, fmt = buf.getvalue(), "JPEG"
     b64 = base64.b64encode(image_bytes).decode("ascii")
     return f"data:image/{fmt.lower()};base64,{b64}"
 
 
 def format_receipt_label(r: dict) -> str:
-    """Store · formatted date · formatted total — explicit separators, nothing cut off
-    mid-word (the old f-string truncated arbitrarily at the selectbox's fixed width,
-    e.g. 'CHOEUN · 12/30/2016FRI · 60.44 — image_files/Image_12/1...' clipping to
-    '...ir'). Money is prefixed with $ and the raw ground-truth date artifacts (a
-    trailing weekday like 'FRI' with no separator) are left as-is but the id suffix
-    that caused the clipping is dropped entirely — the id is never useful to a human
-    reviewer picking a receipt by eye.
-    """
     store = (r["store"] or "(no store)").strip()
     date = (r["date"] or "no date").strip()
     total = f"${r['total']}" if r["total"] else "no total"
     return f"{store} · {date} · {total}"
 
 
-def style_bar_fig(fig: go.Figure, title: str) -> go.Figure:
-    fig.update_layout(title=title, plot_bgcolor=CHART_SURFACE, paper_bgcolor=CHART_SURFACE,
-                      margin=dict(t=40, b=20), font_color=TEXT_PRIMARY)
-    fig.update_xaxes(gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR)
-    fig.update_yaxes(gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR)
+def style_fig(fig: go.Figure, T: dict) -> go.Figure:
+    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                      margin=dict(t=8, b=8, l=8, r=8), font_color=T["text2"], font_family="Manrope")
+    fig.update_xaxes(gridcolor=T["border"], zerolinecolor=T["border"], tickfont_color=T["text_muted"])
+    fig.update_yaxes(gridcolor=T["border"], zerolinecolor=T["border"], tickfont_color=T["text_muted"])
     return fig
 
 
-def render_receipt_tab():
-    # Plain page on load — no default receipt, no pre-selected data. Upload is the
-    # primary path (a real photo, real inference), so it leads; the cached WildReceipt
-    # dataset is a QA/reference tool, not the first thing anyone should see.
-    source = st.radio("Image source", ["Upload", "From URL", "Dataset (cached)"],
-                      horizontal=True, key="imgsrc", label_visibility="visible")
+def render_receipt_tab(T: dict):
+    source = st.radio("Source", ["Upload", "From URL", "Sample receipts"],
+                      horizontal=True, key="imgsrc", label_visibility="collapsed")
 
     image_bytes, image_name, image_id = None, "upload.jpg", None
     if source == "Upload":
+        st.caption("Drag & drop a receipt photo here, or browse your files.")
         uploaded = st.file_uploader("Choose a photo", type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
                                     key="upload_widget", label_visibility="collapsed")
         if uploaded is not None:
             image_bytes, image_name = uploaded.getvalue(), uploaded.name
     elif source == "From URL":
         url = st.text_input("Image URL", key="url_widget", label_visibility="collapsed",
-                            placeholder="https://…")
+                            placeholder="Paste an image link…")
         if url:
             try:
                 resp = requests.get(url, timeout=10)
                 resp.raise_for_status()
                 if not resp.headers.get("content-type", "").startswith("image/"):
-                    st.error("That URL didn't return an image.")
+                    st.error("That link didn't return an image.")
                 else:
                     image_bytes, image_name = resp.content, url.rsplit("/", 1)[-1] or "url.jpg"
             except requests.RequestException as e:
-                st.error(f"Couldn't fetch that URL: {e}")
+                st.error(f"Couldn't fetch that link: {e}")
     else:
         try:
             receipts = fetch_receipts()
         except requests.RequestException as e:
-            st.error(f"Can't reach the API at {API_BASE} — is `uvicorn src.serve:app` "
-                     f"running? ({e})")
+            st.error(f"Can't reach the service ({e}).")
             return
         if not receipts:
-            st.warning("No predictions loaded (data/processed/finetuned_test.jsonl is "
-                        "empty or missing).")
+            st.warning("No sample receipts available.")
             return
         options = {format_receipt_label(r): r["image_id"] for r in receipts}
         label = st.selectbox("Receipt", list(options.keys()), key="receipt_select")
@@ -405,197 +275,163 @@ def render_receipt_tab():
         if img_resp.ok:
             image_bytes = img_resp.content
 
-    col_img, col_table = st.columns([1, 1.5], gap="large")
+    col_img, col_table = st.columns([1, 1.4], gap="large")
     with col_img:
         if image_bytes:
             try:
                 data_uri = image_data_uri(image_bytes)
             except Exception as e:
-                # No silent format guess here either — if Pillow genuinely can't
-                # identify the file, say so plainly rather than rendering it as a
-                # (wrong) assumed type.
                 st.error(f"Couldn't read that file as an image: {e}")
                 data_uri = None
             if data_uri:
-                st.markdown(
-                    f'<div class="receipt-image-frame"><img src="{data_uri}" /></div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f'<div class="receipt-frame"><img src="{data_uri}" /></div>', unsafe_allow_html=True)
         elif source == "Upload":
-            st.info("Choose a photo above to run live inference.")
+            st.info("Upload a receipt photo to begin.")
         elif source == "From URL":
-            st.info("Paste an image URL above to run live inference.")
+            st.info("Paste an image link to begin.")
         else:
-            st.info("No cached image for this receipt on this server.")
+            st.info("No image available for this receipt.")
 
     include_gt = False
     detail = None
-    conf_signal_note = ""
     with col_table:
-        if source == "Dataset (cached)" and image_id is not None:
-            include_gt = st.checkbox("Show ground truth (QA)", value=False)
+        if source == "Sample receipts" and image_id is not None:
+            include_gt = st.checkbox("Compare to reference", value=False)
             detail = fetch_receipt(image_id, include_gt)
-            conf_signal_note = "2-signal (format validity + arithmetic consistency)"
         elif image_bytes:
-            with st.spinner("Running live inference (model generation, ~10-60s)…"):
-                try:
-                    detail = fetch_infer(image_bytes, image_name)
-                except requests.RequestException as e:
-                    st.error(f"Inference failed: {e}")
-            conf_signal_note = "3-signal (+ token logprob) — live generation"
+            # analyze once per unique file: reruns reuse the stored result, no duplicate append
+            h = hashlib.md5(image_bytes).hexdigest()
+            if st.session_state.get("infer_hash") == h and st.session_state.get("infer_result"):
+                detail = st.session_state["infer_result"]
+            else:
+                with st.spinner("Analyzing receipt…"):
+                    try:
+                        detail = fetch_infer(image_bytes, image_name)
+                        st.session_state["infer_hash"] = h
+                        st.session_state["infer_result"] = detail
+                    except requests.RequestException as e:
+                        st.error(f"Analysis failed: {e}")
 
         if detail is None:
-            st.caption("Provide an image (above) to see extracted fields.")
+            st.caption("Extracted details will appear here.")
         else:
             pred = detail["prediction"]
-            conf = detail["confidence"]
             gt = detail.get("ground_truth")
+            store = pred.get("store") or ""
+            chip = category_chip(infer_category({"store": store, "line_items": pred.get("line_items")}), T)
 
             row_class = "field-row with-gt" if gt else "field-row"
-            header_cells = ["Field", "Predicted", "Confidence"] + (["Ground truth"] if gt else [])
-            st.markdown(
-                f'<div class="{row_class} header">' +
-                "".join(f"<div>{c}</div>" for c in header_cells) + "</div>",
-                unsafe_allow_html=True,
-            )
+            cols = "120px 1fr 1fr" if gt else "130px 1fr"
+            header_cells = ["Field", "Value"] + (["Reference"] if gt else [])
+            html = [f'<div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.7rem;flex-wrap:wrap;">'
+                    f'<span style="font-size:1.1rem;font-weight:800;">{store or "Receipt"}</span>{chip}</div>']
+            html.append(f'<div class="{row_class} header" style="grid-template-columns:{cols};">' +
+                        "".join(f"<div>{c}</div>" for c in header_cells) + "</div>")
             for field in ["store", "date", "tax", "tip", "subtotal", "total"]:
-                c = conf[field]
                 val = pred.get(field) if pred.get(field) is not None else "—"
-                cells = [
-                    f'<div class="field-name">{FIELD_LABELS[field]}</div>',
-                    f'<div class="field-value">{val}</div>',
-                    f'<div>{confidence_pill(c["level"], c["score"])}</div>',
-                ]
+                cells = [f'<div class="field-name">{FIELD_LABELS[field]}</div>',
+                         f'<div class="field-value">{val}</div>']
                 if gt:
                     gt_val = gt.get(field) if gt else None
                     cells.append(f'<div class="field-gt">{gt_val if gt_val is not None else "—"}</div>')
-                st.markdown(f'<div class="{row_class}">' + "".join(cells) + "</div>",
-                           unsafe_allow_html=True)
+                html.append(f'<div class="{row_class}" style="grid-template-columns:{cols};">' + "".join(cells) + "</div>")
 
-            li_conf = conf["line_items"]
             items = pred.get("line_items") or []
-            st.markdown(
-                f'<div style="margin-top:0.9rem;display:flex;align-items:center;gap:0.5rem;">'
-                f'<span style="font-size:0.85rem;font-weight:600;">Line items</span>'
-                f'<span style="font-size:0.76rem;color:{TEXT_SECONDARY}">(aggregate)</span>'
-                f'{confidence_pill(li_conf["aggregate"]["level"], li_conf["aggregate"]["score"])}</div>',
-                unsafe_allow_html=True,
-            )
+            html.append('<div class="li-head">Line items</div>')
             if items:
-                # real per-item confidence (format validity + subtotal-consistency,
-                # see src/confidence.py) — each row's badge can genuinely differ now,
-                # not a copy of one shared aggregate value.
-                rows = "".join(
-                    f'<div class="field-row" style="grid-template-columns:1fr 90px 130px;">'
-                    f'<div class="li-name">{it.get("name", "—")}</div>'
-                    f'<div class="li-price">{it.get("price") if it.get("price") is not None else "—"}</div>'
-                    f'<div>{confidence_pill(badge["level"], badge["score"])}</div>'
-                    f"</div>"
-                    for it, badge in zip(items, li_conf["items"])
-                )
-                st.markdown(
-                    '<div class="field-row header" style="grid-template-columns:1fr 90px 130px;">'
-                    "<div>Name</div><div>Price</div><div>Confidence</div></div>" + rows,
-                    unsafe_allow_html=True,
-                )
+                html.append('<div class="field-row header" style="grid-template-columns:1fr 110px;">'
+                            "<div>Name</div><div>Price</div></div>")
+                for it in items:
+                    name = format_item_name(it.get("name")) or "—"
+                    price = it.get("price") if it.get("price") is not None else "—"
+                    html.append('<div class="field-row" style="grid-template-columns:1fr 110px;">'
+                                f'<div class="li-name">{name}</div><div class="li-price">{price}</div></div>')
             else:
-                st.caption("No line items extracted.")
+                html.append('<div class="section-sub" style="margin-top:0.5rem;">No line items found.</div>')
 
-            repair_status = detail["repair_status"]
-            repair_label = REPAIR_LABELS.get(repair_status, repair_status)
-            repair_level = "red" if repair_status == "hard_failure" \
-                else "amber" if repair_status.startswith("repaired") \
-                else "green"
-            st.markdown(
-                '<div class="meta-strip">'
-                f'<span>Repair layer: {pill(repair_label, repair_level)}</span>'
-                f'<span>Confidence signals: {conf_signal_note}</span>'
-                f'<span>Source: {source}</span>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="panel">{"".join(html)}</div>', unsafe_allow_html=True)
 
 
-def render_dashboard_tab():
+def render_dashboard_tab(T: dict):
     try:
         dash = fetch_dashboard()
     except requests.RequestException as e:
-        st.error(f"Can't reach the API at {API_BASE} ({e})")
+        st.error(f"Can't reach the service ({e}).")
         return
 
     if dash["n_receipts"] == 0:
-        st.info("No receipts analyzed yet this session. Go to **Receipt viewer**, "
-                "pick **Upload** or **From URL**, and analyze a real receipt — this "
-                "dashboard builds from that, live, not from the WildReceipt eval set.")
+        st.info("Analyze a few receipts to build your spending overview.")
         return
 
-    st.caption(f"Real-time — {dash['n_receipts']} receipt(s) uploaded and analyzed "
-               f"via live inference this session (not the WildReceipt eval set).")
+    n = dash["n_receipts"]
+    avg = dash["total_spend"] / dash["n_priced"] if dash.get("n_priced") else 0
     st.markdown(
-        f'<div class="meta-strip" style="border-top:none;padding-top:0;margin-top:0;">'
-        f'{pill("caveat", "amber")} <span>{dash["caveat"]}</span></div>',
-        unsafe_allow_html=True,
-    )
-    c1, c2 = st.columns(2)
-    c1.metric("Sum of predicted `total` field", f"{dash['total_spend']:,.2f}",
-              help=f"Summed across {dash['n_priced']} of {dash['n_receipts']} "
-                   f"analyzed receipts with a parseable total.")
-    c2.metric("Receipts analyzed", f"{dash['n_receipts']}")
+        f'<div class="hero"><div class="hero-label">Total spent</div>'
+        f'<div class="hero-value"><span class="cur">$</span>{dash["total_spend"]:,.2f}</div>'
+        f'<div class="hero-sub">across {dash["n_priced"]} of {n} analyzed receipts</div></div>',
+        unsafe_allow_html=True)
+    st.markdown('<div class="stat-grid">' + stat_card("Receipts", f"{n}")
+                + stat_card("Avg / receipt", f"${avg:,.2f}") + "</div>", unsafe_allow_html=True)
+
+    by_month = dash.get("by_month") or []
+    if by_month:
+        st.markdown('<div class="section-title">Spending by month</div>', unsafe_allow_html=True)
+        figm = go.Figure(go.Bar(x=[m["month"] for m in by_month], y=[m["spend"] for m in by_month],
+                                marker_color=T["green"]))
+        figm.update_xaxes(type="category")
+        figm.update_traces(hovertemplate="%{x}: $%{y:,.2f}<extra></extra>")
+        st.plotly_chart(style_fig(figm, T), use_container_width=True)
+
+    cats = None
+    try:
+        cats = fetch_categories()
+    except requests.RequestException:
+        pass
+    if cats:
+        priced = [c for c in cats["categories"] if (c.get("total_spend") or 0) > 0]
+        if priced:
+            st.markdown('<div class="section-title">Spending by category</div>', unsafe_allow_html=True)
+            figc = go.Figure(go.Pie(
+                labels=[c["category"].title() for c in priced],
+                values=[c["total_spend"] for c in priced],
+                marker=dict(colors=[T["cats"].get(c["category"], T["cats"]["other"]) for c in priced],
+                            line=dict(color=T["bg"], width=3)),
+                hole=0.62, sort=False))
+            figc.update_traces(textinfo="percent", textposition="outside",
+                               textfont_family="Manrope", textfont_color=T["text2"],
+                               hovertemplate="%{label}: $%{value:.2f} (%{percent})<extra></extra>")
+            figc.update_layout(showlegend=True, legend=dict(orientation="h", y=-0.05,
+                               font=dict(color=T["text2"], family="Manrope")))
+            st.plotly_chart(style_fig(figc, T), use_container_width=True)
 
     recent = dash.get("recent") or []
     if recent:
-        st.markdown('<div style="margin-top:0.8rem;font-weight:600;font-size:0.85rem;">'
-                    "Recently analyzed</div>", unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Recent transactions</div>', unsafe_allow_html=True)
 
-        def _recent_row(r: dict) -> str:
-            total_display = f"${r['total']}" if r["total"] else "—"
-            return (
-                '<div class="field-row" style="grid-template-columns:1fr 1fr 1fr 110px;">'
-                f'<div class="li-name">{r["store"] or "—"}</div>'
-                f'<div class="li-name">{r["date"] or "—"}</div>'
-                f'<div class="li-price">{total_display}</div>'
-                f'<div class="field-gt">{r["timestamp"][11:16]} UTC</div>'
-                "</div>"
-            )
+        def _txn(r: dict) -> str:
+            total = f'${r["total"]}' if r["total"] else "—"
+            cat = r.get("category") or infer_category({"store": r.get("store") or ""})
+            chip = category_chip(cat, T)
+            return ('<div class="txn">'
+                    f'<div class="txn-store">{r["store"] or "—"}</div>{chip}'
+                    f'<div class="txn-date">{r["date"] or "—"}</div>'
+                    f'<div class="txn-amt">{total}</div></div>')
 
-        rows = "".join(_recent_row(r) for r in recent)
-        st.markdown(
-            '<div class="field-row header" style="grid-template-columns:1fr 1fr 1fr 110px;">'
-            "<div>Store</div><div>Date</div><div>Total</div><div>Analyzed</div></div>" + rows,
-            unsafe_allow_html=True,
-        )
-
-    by_month = dash["by_month"]
-    if by_month:
-        fig = go.Figure(go.Bar(x=[m["month"] for m in by_month],
-                               y=[m["spend"] for m in by_month],
-                               marker_color=SERIES_BLUE))
-        # Force a categorical x-axis explicitly. With few receipts (the live-only
-        # dashboard's normal case now, vs. the old 472-receipt eval set), a single
-        # "YYYY-MM" string reads as a date to Plotly's auto-inference, and it
-        # silently switches to a continuous date axis with nonsense sub-second tick
-        # labels ("23:59:59.9996") instead of one clean categorical bar.
-        fig.update_xaxes(type="category")
-        fig.update_yaxes(title="Sum of predicted total")
-        st.plotly_chart(style_bar_fig(fig, "Spend by month"), use_container_width=True)
-        with st.expander("Table view"):
-            st.dataframe(by_month, use_container_width=True)
-
-    by_store = dash["by_store"]
-    if by_store:
-        fig2 = go.Figure(go.Bar(x=[s["spend"] for s in by_store],
-                                y=[s["store"] for s in by_store],
-                                orientation="h", marker_color=SERIES_BLUE))
-        fig2.update_yaxes(autorange="reversed", type="category")
-        fig2.update_xaxes(title="Sum of predicted total")
-        st.plotly_chart(style_bar_fig(fig2, "Top 10 stores by spend"), use_container_width=True)
-        with st.expander("Table view"):
-            st.dataframe(by_store, use_container_width=True)
+        st.markdown('<div class="panel">' + "".join(_txn(r) for r in recent) + "</div>", unsafe_allow_html=True)
 
 
-st.markdown('<p class="app-wordmark">ReceiptVLM</p>', unsafe_allow_html=True)
-tab1, tab2 = st.tabs(["Receipt viewer", "Spending dashboard"])
+c_brand, c_theme = st.columns([3, 1.1], gap="small", vertical_alignment="center")
+with c_theme:
+    mode = st.radio("Theme", ["Dark", "Light"], horizontal=True, key="theme", label_visibility="collapsed")
+T = THEMES[mode]
+inject_css(T)
+with c_brand:
+    st.markdown('<p class="brand-mark">Receipt<span class="dot">VLM</span></p>'
+                '<p class="brand-tag">Track every dollar, straight from your receipts.</p>',
+                unsafe_allow_html=True)
+
+tab1, tab2 = st.tabs(["Receipts", "Overview"])
 with tab1:
-    render_receipt_tab()
+    render_receipt_tab(T)
 with tab2:
-    render_dashboard_tab()
+    render_dashboard_tab(T)

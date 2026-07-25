@@ -1,25 +1,8 @@
-"""Deliverable #10 (API half) — FastAPI serving layer (Track C).
-
-UPDATED 2026-07-23: this machine now has mlx_vlm + the base model + WildReceipt images
-installed (see PROGRESS.md — it was set up mid-session, no longer a stopgap-only
-analysis clone). `/receipts/{image_id}` still serves *cached* predictions from
-`data/processed/finetuned_test.jsonl` (fast, and matches what #5/#6's reported numbers
-were scored against) with #8's real 2-signal calibrated confidence (format validity +
-arithmetic consistency — those cached predictions were never generated with
-`--capture-logprobs`, so no token-logprob signal exists for them). The new `POST
-/infer` endpoint is genuinely live: an uploaded image is run through the model, #9's
-repair layer, and #8's *3-signal* calibration (now that generation-time logprobs are
-available), calibrated against a real (if modest, n=80) logprob-enabled run. Two
-separate calibration fits, not one, because the two endpoints have different signals
-available — documented at each `_PLATT_*` definition below.
-
-Run (from repo root):
-    uvicorn src.serve:app --reload --port 8000
-"""
 from __future__ import annotations
 
 import datetime
 import json
+import logging
 import re
 import sys
 import tempfile
@@ -30,34 +13,26 @@ from typing import Any
 import numpy as np
 import pillow_heif
 
-# mlx_vlm's own image loader (mlx_vlm/utils.py: load_image) goes through
-# PIL.Image.open, same as app/streamlit_app.py's preview path — stock Pillow has no
-# HEIC/HEIF decoder at all, and this registration is process-global but NOT shared
-# across processes, so /infer needs its own copy of this call, not just the one in
-# the Streamlit app.
-pillow_heif.register_heif_opener()
+pillow_heif.register_heif_opener()  # /infer needs its own HEIC opener (registration isn't cross-process)
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+# repo root + src/ on path: the src submodules import each other by bare name (run-as-script style)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-# confidence.py's own `import eval as ev` (and zeroshot.py's `from train import ...`)
-# assume they're run as a script (`python src/confidence.py`), which puts src/ itself
-# on sys.path — true for every other consumer of eval.py in this project, but not for
-# serve.py importing them as submodules of the `src` package. Adding src/ here (in
-# addition to the repo root above) covers both without changing their import style.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from src.eval import normalize_num, normalize_text, SCALAR_FIELDS  # noqa: E402  (reuse #5's parser)
-from src.confidence import (  # noqa: E402  (reuse #8's real calibrated composite)
+from src.eval import normalize_num, normalize_text, SCALAR_FIELDS
+from src.confidence import (
     arithmetic_consistency, raw_score, logprob_feature, apply_platt, run as run_confidence,
     line_item_raw_score, line_item_consistency, line_item_logprob_feature,
 )
-from src.repair import repair_json  # noqa: E402  (#9)
-from src.zeroshot import (  # noqa: E402
+from src.repair import repair_json
+from src.categorize import infer_category
+from src.zeroshot import (
     generate_with_logprobs, field_avg_logprob, line_item_avg_logprob,
     normalize as normalize_prediction,
 )
-from src.train import DEFAULT_MODEL, PROMPT  # noqa: E402  (the exact schema-guided prompt #4/#3 train/eval against)
+from src.train import DEFAULT_MODEL, PROMPT
 
 try:
     from mlx_vlm import load as load_vlm
@@ -75,9 +50,7 @@ GT_FILE = PROC_ROOT / "test.jsonl"
 _CONF_TAG = "finetuned"
 _CONF_TAG_LOGPROB = "finetuned_logprob"
 
-# eval.py (#5) has no date-normalization helper — it only needs text/numeric equality
-# for scoring, never a canonical calendar value — so the dashboard's month bucketing
-# is its own minimal parser rather than a borrowed one that doesn't actually exist.
+# minimal date parser for the dashboard's month bucketing
 _DATE_RE = re.compile(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})")
 
 
@@ -111,25 +84,45 @@ def load_jsonl(path: Path) -> dict[str, dict]:
 PREDICTIONS = load_jsonl(PRED_FILE)
 GROUND_TRUTH = load_jsonl(GT_FILE)
 
+# Confidence is computed on every receipt but not shown in the UI — logged here instead.
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+_conf_logger = logging.getLogger("receiptvlm.confidence")
+_conf_logger.setLevel(logging.INFO)
+if not _conf_logger.handlers:
+    # mode="w" truncates on startup, so the log holds only the current backend session.
+    _fh = logging.FileHandler(LOG_DIR / "confidence.jsonl", mode="w")
+    _fh.setFormatter(logging.Formatter("%(message)s"))
+    _conf_logger.addHandler(_fh)
+
+
+def _log_confidence(ref: str, source: str, confidence: dict) -> None:
+    li = confidence.get("line_items", {})
+    entry = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "source": source, "ref": ref,
+        "fields": {f: {"level": confidence.get(f, {}).get("level"),
+                       "score": confidence.get(f, {}).get("score")} for f in SCALAR_FIELDS},
+        "line_items_aggregate": {"level": li.get("aggregate", {}).get("level"),
+                                 "score": li.get("aggregate", {}).get("score")},
+        "line_items": [{"level": b.get("level"), "score": b.get("score")}
+                       for b in li.get("items", [])],
+    }
+    _conf_logger.info(json.dumps(entry))
+
 
 def _params_by_field(conf_results: dict) -> dict[str, np.ndarray]:
     return {f: np.array(r["calibration_weights"] + [r["calibration_bias"]])
             for f, r in conf_results["fields"].items() if "calibration_weights" in r}
 
 
-# Fit #8's Platt calibration once at startup against the same predictions this API
-# serves — cheap (472 receipts, sub-second) and keeps confidence live/reproducible
-# rather than depending on a possibly-stale cached _confidence_*.json on disk. This is
-# the 2-signal (format validity + arithmetic consistency) fit: /receipts/{image_id}'s
-# cached predictions were never generated with --capture-logprobs, so no logprob
-# signal exists for them to calibrate against.
+# 2-signal Platt calibration (format validity + arithmetic consistency) for the cached
+# predictions, fit once at startup against the same file this API serves.
 _CONF_RESULTS = run_confidence(_CONF_TAG, "test", seed=0, calib_frac=0.5, quiet=True)
 _PLATT = _params_by_field(_CONF_RESULTS)
 
-# Separate 3-signal (+ token logprob) calibration for /infer's live predictions, fit
-# against the one logprob-enabled prediction file that exists (a modest n=80 subset —
-# see PROGRESS.md). Falls back to None (2-signal only) if that file hasn't been
-# generated on whatever machine this runs on.
+# Separate 3-signal (+ token logprob) calibration for /infer's live predictions; falls
+# back to 2-signal only if the logprob-enabled prediction file isn't present.
 _LOGPROB_PRED_FILE = PROC_ROOT / f"{_CONF_TAG_LOGPROB}_test.jsonl"
 if _LOGPROB_PRED_FILE.exists():
     _CONF_RESULTS_3SIG = run_confidence(_CONF_TAG_LOGPROB, "test", seed=0,
@@ -145,18 +138,9 @@ def _band(score: float) -> dict:
     return {"score": round(score, 2), "level": level}
 
 
-# A null prediction means two very different things depending on the field, checked
-# against real ground truth (test.jsonl) rather than assumed (see PROGRESS.md
-# 2026-07-25): for `store`, a null prediction is *always* a genuine miss in this
-# dataset (0/23 null predictions have a null gold value too — every receipt has a
-# store name) — showing that as a neutral "not applicable" badge would hide a real
-# problem. For every other scalar field, null is usually the model *correctly*
-# predicting legitimate absence (78-97% of null predictions match a null gold value,
-# tip most starkly at 97%) — showing that as red/0.00 falsely implies a failed
-# extraction on what's actually a correct answer. So: `store`'s nulls get a distinct
-# "missing" badge (still a real concern, but no fabricated numeric score), everything
-# else gets a neutral "na" badge (no score, nothing to be confident or unconfident
-# about since there's no value on display).
+# A null `store` is almost always a real miss (every receipt has a store name), so it
+# gets a "missing" badge; a null in any other field is usually correct absence, so it
+# gets a neutral "na" badge rather than a red/0.00 that implies a failed extraction.
 FIELDS_WHERE_NULL_IS_LIKELY_A_MISS = {"store"}
 
 
@@ -183,26 +167,13 @@ def _null_field_badge(field: str) -> dict:
 
 
 def _line_item_badges(record: dict, platt_params: dict, use_logprob: bool = False) -> dict:
-    """Real per-item confidence, replacing the old hardcoded 0.6-for-any-nonempty-list
-    constant (see PROGRESS.md 2026-07-25 for the before/after distribution this used
-    to produce vs. now). Each item's raw score comes from #8's `line_item_raw_score`
-    (name format validity + whether this item's price is implicated in a subtotal
-    mismatch); items with a null price get `_na_badge()` directly — per real data,
-    ~12% of *gold* line items also have no price, so it's not always a miss (same
-    principle as the scalar-field fix above, one level down).
-
-    Items that DO have a price and a valid-looking name, but no consistency signal
-    exists for this receipt, get `_unscored_badge()` instead of a fabricated middling
-    number — this used to render as an identical "amber · 0.72"-ish badge on 86.8% of
-    multi-item receipts (see PROGRESS.md 2026-07-26), which looked like real per-item
-    confidence but wasn't. When `use_logprob` is set (live inference, which always has
-    per-item token logprobs available — see `line_item_logprob_feature`), that no-
-    consistency-signal case is instead SCORED using logprob alone (heuristic imputed
-    neutral), because logprob varies per item even when consistency has nothing to
-    say — this is what actually breaks the identical-badge problem for live receipts,
-    not just relabels it more honestly. `_unscored_badge()` still applies when even
-    logprob comes back empty (e.g. a truncated generation whose array span wasn't
-    found).
+    """Per-item confidence. Each item's raw score comes from name format validity plus
+    whether its price is implicated in a subtotal mismatch; null-price items get an
+    `_na_badge()` (a missing price isn't always a miss). Items with a price but no
+    consistency signal get `_unscored_badge()` rather than a fabricated middling number
+    — unless `use_logprob` is set (live inference), where per-item token logprob scores
+    them so every item's badge can differ. `_unscored_badge()` still applies if logprob
+    is also empty (e.g. a truncated generation).
 
     The aggregate is the mean of the actually-scored items' calibrated probabilities,
     so it reflects the real spread instead of repeating one constant onto every
@@ -361,10 +332,12 @@ def get_receipt(image_id: str, include_gt: bool = False):
     rec = PREDICTIONS.get(image_id)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no prediction for {image_id}")
+    confidence = field_confidence(rec)
+    _log_confidence(image_id, "cached", confidence)
     return ReceiptDetail(
         image_id=image_id,
         prediction={k: rec.get(k) for k in SCALAR_FIELDS + ["line_items"]},
-        confidence=field_confidence(rec),
+        confidence=confidence,
         ground_truth=GROUND_TRUTH.get(image_id) if include_gt else None,
         # #9 (src/repair.py) exists now and runs at generation time inside zeroshot.py's
         # inference loop, on the raw text the model emits — but this endpoint serves
@@ -436,9 +409,11 @@ async def infer(file: UploadFile = File(...)):
         "filename": file.filename,
         "prediction": prediction,
     })
+    confidence = field_confidence_live(record)
+    _log_confidence(file.filename or "upload", "infer", confidence)
     return InferResult(
         prediction=prediction,
-        confidence=field_confidence_live(record),
+        confidence=confidence,
         repair_status=status,
     )
 
@@ -483,14 +458,42 @@ def dashboard():
     bought anything on). Empty until at least one receipt has been analyzed.
     """
     agg = _aggregate_spend([r["prediction"] for r in LIVE_RECEIPTS])
+    # category computed server-side (needs store + line items) so storeless receipts
+    # still categorize from what was bought instead of falling to "other".
     agg["recent"] = [
         {"timestamp": r["timestamp"], "filename": r["filename"],
          "store": r["prediction"].get("store"), "date": r["prediction"].get("date"),
-         "total": r["prediction"].get("total")}
+         "total": r["prediction"].get("total"),
+         "category": infer_category(r["prediction"])}
         for r in reversed(LIVE_RECEIPTS[-20:])
     ]
-    agg["caveat"] = ("figures reflect the model's raw predicted `total` per receipt — "
-                     "real extraction, not manually verified; check each receipt's "
-                     "confidence badges in the Receipt viewer tab before trusting a "
-                     "number here")
+    agg["caveat"] = "predicted totals, not manually verified"
     return agg
+
+
+@app.get("/categories")
+def categories():
+    """Merchant-category breakdown over the receipts uploaded this server run (same
+    LIVE_RECEIPTS set /dashboard uses). Categories are heuristic (store-name keywords)."""
+    records = [r["prediction"] for r in LIVE_RECEIPTS]
+    buckets: dict[str, dict] = defaultdict(lambda: {"count": 0, "spend": 0.0, "n_priced": 0})
+    for rec in records:
+        b = buckets[infer_category(rec)]
+        b["count"] += 1
+        total = normalize_num(rec.get("total"))
+        if total is not None:
+            b["spend"] += total
+            b["n_priced"] += 1
+    order = ["dining", "grocery", "fuel", "retail", "other"]
+    out = []
+    for cat in [c for c in order if c in buckets] + [c for c in buckets if c not in order]:
+        b = buckets[cat]
+        out.append({
+            "category": cat,
+            "count": b["count"],
+            "share": round(100 * b["count"] / max(len(records), 1), 1),
+            "total_spend": round(b["spend"], 2),
+            "avg_total": round(b["spend"] / b["n_priced"], 2) if b["n_priced"] else None,
+        })
+    return {"n_receipts": len(records),
+            "basis": "uploaded receipts this session; heuristic categories", "categories": out}

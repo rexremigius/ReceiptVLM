@@ -1,22 +1,3 @@
-"""Deliverable #9 — JSON repair layer (used by #10; see CLAUDE.md / SKILL.md #9).
-
-Constrained/grammar decoding (SKILL.md's "first line of defense") is an MLX-VLM
-generation-time concern that needs a loaded model — this analysis machine has neither,
-so that half of #9 is an M5 task, not this file's. What's buildable and testable here
-is the "second line": a fixer for the JSON a model *did* generate but got slightly
-wrong — trailing commas, a stray Python-repr dialect, or truncation from a max_tokens
-cutoff mid-generation. Anything still unparseable after every fixup is a genuine hard
-failure, reported as such (never silently dropped, never guessed at) so the eval
-denominator stays honest.
-
-`zeroshot.py` (#3, and #4's fine-tuned inference path via --adapter-path) is this
-module's first real caller — its old inline `extract_json` explicitly deferred to
-"#9's job" in a comment; this replaces that.
-
-Usage:
-    python src/repair.py            # runs the synthetic smoke test (representative
-                                     # broken-JSON cases, no model needed)
-"""
 from __future__ import annotations
 
 import ast
@@ -44,8 +25,7 @@ def _fix_trailing_commas(text: str) -> str:
 
 
 def _fix_python_literal(text: str) -> dict | None:
-    """Model output has, at least once (see PROGRESS.md 2026-07-20, the corrupted
-    training-target bug), degenerated into Python-repr-style pseudo-JSON — single
+    """Model output sometimes degenerates into Python-repr-style pseudo-JSON — single
     quotes, `None`/`True`/`False` — instead of real JSON. `ast.literal_eval` parses
     that dialect directly; regex-swapping single quotes for double quotes was
     considered and rejected, since it breaks on any string value that itself

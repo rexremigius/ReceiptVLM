@@ -1,23 +1,3 @@
-"""Receipt KIE evaluation harness.
-
-Field-level micro-F1 with per-field breakdown, greedy line-item alignment,
-and bootstrap confidence intervals. Scores any number of prediction files
-against one gold file so baseline / fine-tuned / quantized variants all use
-the same code path.
-
-Usage:
-    python eval.py --gold gold.jsonl --pred zeroshot.jsonl finetuned.jsonl
-    python eval.py                      # runs the synthetic smoke test
-
-Record format (JSON list or JSONL, one object per receipt) — matches prep.py's
-actual output schema:
-    {"image_id": "r001.jpg", "store": "...", "date": "...", "subtotal": "...",
-     "tax": "...", "tip": null, "total": "12.99",
-     "line_items": [{"name": "...", "price": "4.50"}]}
-The record id can be under "image_id" (prep.py's key) or "id"; both are accepted.
-Fields may sit at the top level or under a "fields" key; both are accepted.
-"""
-
 import argparse
 import difflib
 import json
