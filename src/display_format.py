@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import re
 
-_LOWER_TO_UPPER = re.compile(r"(?<=[a-z])(?=[A-Z])")          # GrossesWasser -> Grosses Wasser
-_ACRONYM_TO_WORD = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")    # HALFDietCake -> HALF DietCake
+_LOWER_TO_UPPER = re.compile(r"(?<=[a-z])(?=[A-Z])")          # GrossesWasser - Grosses Wasser
+_ACRONYM_TO_WORD = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")    # HALFDietCake - HALF DietCake
 # opt-in only: mangles brands that fuse letters+digits (7UP, V8), so off by default
 _LETTER_DIGIT = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
 
 
 def format_item_name(name, split_digits: bool = False) -> str:
-    """Display-friendly line-item name (pure; never mutates input). Splits camelCase/
-    acronym boundaries; split_digits also separates letter<->digit runs (pack sizes).
-    Non-string/empty input is returned as-is, so it's safe on a possibly-null field."""
+    """Split camel-case and acronyms into words, optionally splitting letters from digits."""
+    
     if not isinstance(name, str) or not name:
         return name
     s = _ACRONYM_TO_WORD.sub(" ", name)

@@ -17,6 +17,10 @@ SCALAR_KEYS = [k for k in SCHEMA_KEYS if k != "line_items"]
 
 
 def normalize(parsed: dict | None) -> dict:
+    """Normalize a parsed receipt dict to ensure all expected keys are present, and
+    that line_items is always a list (even if empty). Returns a dict with all SCALAR_KEYS 
+    and line_items, with None for missing fields. If parsed is None, returns all None/empty values."""
+
     if parsed is None:
         return {k: None for k in SCALAR_KEYS} | {"line_items": []}
     record = {k: parsed.get(k) for k in SCALAR_KEYS}
@@ -26,14 +30,13 @@ def normalize(parsed: dict | None) -> dict:
 
 
 def generate_with_logprobs(model, processor, prompt, image, **kwargs) -> tuple[str, list]:
-    """Like mlx_vlm.generate(), but also keeps the per-step (text_chunk, token_logprob)
-    pairs that plain generate() discards — #8's third confidence signal (token logprob)
-    needs them, and there's no way to recover them after the fact from just the final
-    text. `stream_generate`'s GenerationResult already carries a full-vocab logprob
-    vector plus which token was actually chosen at each step; this just keeps
-    `logprobs[token]` (the log-probability of what the model actually emitted) instead
-    of throwing it away like `generate()` does.
-    """
+    """Generate a receipt JSON string from an image, returning the raw text and a list of
+    (chunk_text, token_logprob) tuples for each streamed chunk. The logprobs
+    correspond to the model's per-token log probability for each token in the chunk, and
+    can be used to compute average logprobs for specific fields or line items in the output
+    JSON. See field_avg_logprob() and line_item_avg_logprob() for examples of how to use
+    the logprobs to compute confidence scores for specific fields or line items."""
+
     import numpy as np
     chunks = []
     for response in stream_generate(model, processor, prompt, image=image, **kwargs):
@@ -47,11 +50,9 @@ def generate_with_logprobs(model, processor, prompt, image, **kwargs) -> tuple[s
 
 
 def field_avg_logprob(field: str, text: str, chunks: list) -> float | None:
-    """Average token logprob over the characters spanning `field`'s value in the raw
-    JSON text — a coarse (chunk-level, not exact-token-level) but simple mapping from
-    the streamed per-step logprobs back to one specific field's value. Returns None if
-    the field's key isn't found in the raw text at all (e.g. the model never emitted it).
-    """
+    """Average token logprob over the characters spanning the given field's value in the
+    raw JSON text. None if the field wasn't found (e.g. truncated generation)."""
+
     key_pos = text.find(f'"{field}"')
     if key_pos == -1:
         return None
@@ -94,13 +95,10 @@ def field_avg_logprob(field: str, text: str, chunks: list) -> float | None:
 
 
 def line_item_spans(text: str) -> list[tuple[int, int]]:
-    """Character (start, end) spans of each `{...}` object inside the top-level
-    `"line_items"` array in the raw JSON text — the array-element analog of
-    `field_avg_logprob`'s single-value span-finding, needed because a line item isn't
-    one value at one position, it's a whole sub-object. Returns spans in array order,
-    so `spans[i]` lines up with `parsed["line_items"][i]` as long as the model didn't
-    truncate mid-array (repair.py's job, not this one's).
-    """
+    """Return a list of (start, end) character spans for each line-item object in the
+    raw JSON text. Returns an empty list if the line_items array isn't found or is empty
+    (e.g. truncated generation)."""
+
     key_pos = text.find('"line_items"')
     if key_pos == -1:
         return []
@@ -138,10 +136,9 @@ def line_item_spans(text: str) -> list[tuple[int, int]]:
 
 
 def line_item_avg_logprob(idx: int, text: str, chunks: list) -> float | None:
-    """Average token logprob over the characters spanning the `idx`-th line item's
-    `{...}` object in the raw JSON text. None if the array wasn't found or has fewer
-    than `idx + 1` objects (e.g. truncated generation).
-    """
+    """Average token logprob over the characters spanning the given line-item object in
+    the raw JSON text. None if the line item wasn't found (e.g. truncated generation)."""
+    
     spans = line_item_spans(text)
     if idx >= len(spans):
         return None

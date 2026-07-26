@@ -11,6 +11,9 @@ MONEY_RE = re.compile(r"-?\d[\d,]*\.?\d*")
 
 
 def normalize(field: str, value):
+    """Normalize a field value for comparison: lowercased string for text fields, 
+    float for money fields, or None if empty/invalid."""
+
     if value is None:
         return None
     value = str(value).strip()
@@ -28,6 +31,8 @@ def normalize(field: str, value):
 
 
 def load_jsonl(path: Path) -> dict[str, dict]:
+    """Load a JSONL file of receipts, returning a dict keyed by image_id."""
+
     records = {}
     for line in path.open():
         line = line.strip()
@@ -39,6 +44,9 @@ def load_jsonl(path: Path) -> dict[str, dict]:
 
 
 def score(pred_path: Path, gt: dict[str, dict]) -> dict:
+    """Score a prediction file against a ground-truth dict, returning accuracy per field and
+    line-item price precision/recall."""
+    
     preds = load_jsonl(pred_path)
     field_correct = {k: 0 for k in SCALAR_KEYS}
     field_total = {k: 0 for k in SCALAR_KEYS}

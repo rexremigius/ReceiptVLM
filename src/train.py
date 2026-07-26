@@ -31,17 +31,17 @@ PROMPT = ("Extract the receipt fields as JSON with keys store, date, tax, tip, "
 
 
 def target_json(record: dict) -> str:
+    """Return a JSON string of the record, including only the schema fields. Ensures
+    consistent key order and no ASCII-escaping of non-ASCII characters."""
+
     return json.dumps({k: record[k] for k in SCHEMA_KEYS}, ensure_ascii=False)
 
 
 def to_example(record: dict) -> dict:
-    # content must be a plain string here: mlx_vlm's apply_chat_template (called with
-    # return_messages=True in build_dataset) does its own content-list wrapping
-    # (image token + text parts) from a bare string. Passing an already-wrapped list
-    # gets it wrapped *again*, so the assistant target the model actually saw was a
-    # corrupted repr of the wrapper around the JSON, not the clean JSON itself — this
-    # was silently training the model on garbage until caught by inspecting raw
-    # fine-tuned generations.
+    """Convert a receipt record to a training example dict with messages and images for
+    mlx_vlm.trainer.Dataset. The prompt is the user message, and the JSON completion
+    is the assistant message. The image is the receipt image."""
+    
     messages = [
         {"role": "user", "content": PROMPT},
         {"role": "assistant", "content": target_json(record)},
@@ -50,12 +50,9 @@ def to_example(record: dict) -> dict:
 
 
 def load_split(limit: int | None, val_frac: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Train/val split over data/processed/train.jsonl, at receipt granularity.
+    """Load the train split of receipts, optionally limiting the number of records and
+    reserving a fraction for validation. Returns (train_records, val_records)."""
 
-    Each JSONL line is already one whole receipt (prep.py grouped boxes by image_id),
-    so a plain shuffle-and-slice over records is a receipt-level split, not a box-level
-    one — a receipt's line items never end up split across train and val.
-    """
     records = [json.loads(line) for line in (PROC_ROOT / "train.jsonl").open() if line.strip()]
     rng = random.Random(seed)
     rng.shuffle(records)
@@ -67,6 +64,10 @@ def load_split(limit: int | None, val_frac: float, seed: int) -> tuple[list[dict
 
 
 def build_dataset(records, processor, config, image_processor, image_resize_shape) -> Dataset:
+    """Build a mlx_vlm.trainer.Dataset from receipt records, applying the chat template
+    to the prompt + JSON completion. Returns a Dataset with input_ids, attention_mask,
+    pixel_values, and labels for training."""
+
     hf_ds = HFDataset.from_list([to_example(r) for r in records])
 
     def process_data(ex):
@@ -81,13 +82,9 @@ def build_dataset(records, processor, config, image_processor, image_resize_shap
 
 
 def resolve_assistant_id(processor, dataset: Dataset) -> int:
-    """Token id marking the start of the assistant turn, for completion-only loss masking.
+    """Locate the token ID of the 'assistant' role in a tokenized training example, for
+    use in Trainer.train_on_completions. Raises ValueError if not found."""
 
-    Computed from the tokenizer rather than hard-coded, since the SmolVLM2 fallback has
-    a different vocabulary. Verified against an actual tokenized example — if it's not
-    found there, train_on_completions would silently mask nothing and train on the whole
-    sequence (prompt included) instead of just the JSON completion.
-    """
     tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     candidates = tok.encode("assistant", add_special_tokens=False)
     assistant_id = candidates[-1] if candidates else None
@@ -103,18 +100,10 @@ def resolve_assistant_id(processor, dataset: Dataset) -> int:
 
 
 def guarded_train_step(trainer: Trainer, batch) -> tuple[float, bool]:
-    """Trainer.train_step, but skips the optimizer update if loss/grads are NaN/Inf.
+    """Run a single train step, returning (loss, applied). If the loss or any gradient
+    is NaN or Inf, the step is skipped and applied=False. Otherwise, the optimizer is
+    updated and applied=True."""
 
-    Found by direct reproduction: a specific training image, only at higher resize
-    resolutions (768x1024), produces an unusually large vision-tower patch grid
-    (74x52=3848 patches vs. 768 at 448x448) that triggers NaN somewhere in the forward
-    pass — confirmed the raw preprocessed pixel values themselves are clean (no NaN/Inf),
-    so it's a numerical edge case inside the model at that scale, not a data bug. Since
-    Adam's moving averages absorb a NaN update permanently, one bad image silently wrecked
-    an entire multi-hour run (loss went NaN at step ~6 of 2280 and never recovered). This
-    checks loss/grads *before* they reach the optimizer, so a single pathological example
-    costs one skipped step instead of the whole run.
-    """
     loss_and_grad_fn = nn.value_and_grad(trainer.model, trainer.loss_fn)
     loss, grads = loss_and_grad_fn(trainer.model, batch)
     mx.eval(loss)
@@ -131,9 +120,9 @@ def guarded_train_step(trainer: Trainer, batch) -> tuple[float, bool]:
 
 
 def val_loss(trainer: Trainer, dataset: Dataset, max_batches: int | None = None) -> float:
-    """Mean val loss, excluding NaN/Inf examples (same forward-pass edge case
-    guarded_train_step protects against — a single poisoned example previously
-    turned the whole aggregate NaN even though the model itself was fine)."""
+    """Compute the average loss on a validation dataset, optionally limiting the number of
+    batches. Returns NaN if the dataset is empty or all losses are NaN/Inf."""
+
     n = len(dataset) if max_batches is None else min(max_batches, len(dataset))
     if n == 0:
         return float("nan")
@@ -143,6 +132,9 @@ def val_loss(trainer: Trainer, dataset: Dataset, max_batches: int | None = None)
 
 
 def save_checkpoint(model, step: int, keep_last: int, ckpt_root: Path) -> Path:
+    """Save a LoRA adapter checkpoint for the given step, keeping only the last N checkpoints.
+    Returns the path to the saved checkpoint directory."""
+
     ckpt_root.mkdir(parents=True, exist_ok=True)
     ckpt_dir = ckpt_root / f"step_{step}"
     ckpt_dir.mkdir(exist_ok=True)
@@ -165,17 +157,8 @@ def main():
                      help="total optimizer steps; default len(train) * epochs")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--lora-rank", type=int, default=8)
-    # NB: mlx_vlm's LoRaLayer applies `alpha` as a raw multiplier on the LoRA update
-    # (not the usual alpha/rank scaling), so this needs to stay near their own CLI
-    # default (0.1) — alpha=16 (the "usual" convention) blew the loss up to NaN within
-    # 15 steps on the tiny-subset validation run.
     ap.add_argument("--lora-alpha", type=float, default=1.0)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
-    # 448x448 was the original default; receipts with many line items (tall/narrow images,
-    # e.g. 1040x1536) got squashed illegibly at that size, causing severe under-extraction
-    # of line items (confirmed via taxonomy.py + direct inspection). 768x1024 fixed it:
-    # micro-F1 0.525 -> 0.724 on the full test set. Keep this in sync with zeroshot.py's
-    # default so training and inference always use the same resolution.
     ap.add_argument("--image-resize", type=int, nargs=2, default=[768, 1024])
     ap.add_argument("--save-every", type=int, default=50)
     ap.add_argument("--eval-every", type=int, default=25)

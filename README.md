@@ -1,4 +1,4 @@
-# ReceiptVLM — Receipt-to-JSON
+# ReceiptVLM - Receipt-to-JSON
 
 Turn a photo of a receipt into structured data. Given an image, ReceiptVLM extracts the
 merchant, date, tax, tip, subtotal, total, and the individual line items (name and price),
@@ -16,8 +16,8 @@ and returns them as JSON:
 }
 ```
 
-Extraction is done by a small vision-language model — Qwen2.5-VL-3B, fine-tuned with QLoRA
-on the WildReceipt dataset — running on-device on Apple Silicon through MLX-VLM, so receipts
+Extraction is done by a small vision-language model - Qwen2.5-VL-3B, fine-tuned with QLoRA
+on the WildReceipt dataset - running on-device on Apple Silicon through MLX-VLM, so receipts
 never leave the machine. A Streamlit app gives a spending dashboard on top.
 
 Built as a CS6140 (Machine Learning) project at Northeastern University.
@@ -37,7 +37,7 @@ statistically significant (paired bootstrap, p≈0). The biggest single win came
 the training/inference image resolution from 448×448 to 768×1024 (0.525 → 0.724 before an
 evaluation-harness fix, → 0.781 after): tall multi-item receipts were illegible when squashed.
 
-**Quantization** — FP16 vs. INT8 vs. INT4 side by side (60-receipt subset):
+**Quantization** - FP16 vs. INT8 vs. INT4 side by side (60-receipt subset):
 
 | Precision | micro-F1 | Latency / receipt | Peak memory |
 |---|---|---|---|
@@ -77,14 +77,14 @@ uvicorn src.serve:app --port 8000         # FastAPI backend (loads the model + a
 streamlit run app/streamlit_app.py        # UI at http://localhost:8501
 ```
 
-**Receipts tab — analyze a receipt.** Drag & drop a receipt photo (or paste an image URL,
+**Receipts tab - analyze a receipt.** Drag & drop a receipt photo (or paste an image URL,
 or pick one from the WildReceipt sample set). The image is run through the fine-tuned model
-live — HEIC/iPhone photos included — and the extracted fields (store, date, tax, tip,
+live - HEIC/iPhone photos included - and the extracted fields (store, date, tax, tip,
 subtotal, total) and line items are shown in a clean statement card, headed by the store
 name and a merchant-category chip (grocery / dining / fuel / …). Confidence is computed per
 field but hidden from the display and logged to `logs/confidence.jsonl` instead.
 
-**Overview tab — your spending dashboard.** Built live from the receipts you've analyzed
+**Overview tab - your spending dashboard.** Built live from the receipts you've analyzed
 this session:
 - a large **total spent** figure, plus receipts-analyzed and average-per-receipt tiles;
 - **spend by month** (bar chart) and **spend by category** (donut, colorblind-safe palette);
@@ -118,7 +118,7 @@ serve.py       FastAPI serving layer (+ app/streamlit_app.py front end)
 ```
 data/          wildreceipt/ (gitignored) + processed JSON predictions
 src/           the pipeline scripts above
-app/           streamlit_app.py — the UI
+app/           streamlit_app.py - the UI
 checkpoints/   trained LoRA adapters (gitignored)
 logs/          per-session confidence logs (reset on each backend start)
 ```

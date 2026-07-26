@@ -20,11 +20,14 @@ LR_GRID = [5e-5, 1e-4, 2e-4]
 
 
 def run_name(rank: float, alpha: float, lr: float) -> str:
+    """Return a unique name for a hyperparameter config, e.g. r8_a1.0_lr0.0001."""
+    
     return f"r{rank}_a{alpha}_lr{lr:g}"
 
 
 def run_trial(rank: float, alpha: float, lr: float) -> dict:
     """Run one subset trial (unless already run); return its training_log.json entries."""
+
     name = run_name(rank, alpha, lr)
     ckpt_dir = SWEEP_ROOT / name
     log_path = ckpt_dir / "final" / "training_log.json"
@@ -49,11 +52,15 @@ def run_trial(rank: float, alpha: float, lr: float) -> dict:
 
 
 def best_val_loss(history: list[dict]) -> float:
+    """Return the best validation loss from a training log, or NaN if none."""
+
     vals = [e["val_loss"] for e in history if "val_loss" in e]
     return min(vals) if vals else float("nan")
 
 
 def sweep_dimension(label: str, grid: list[float], fixed: dict) -> tuple[float, dict]:
+    """Sweep one hyperparameter dimension, returning the best value and a dict of results."""
+
     print(f"\n=== sweeping {label}: {grid} (fixed: {fixed}) ===")
     results = {}
     for value in grid:

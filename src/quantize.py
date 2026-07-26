@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import argparse
@@ -40,11 +41,8 @@ def _peak_memory_gb() -> float:
 
 def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
                  max_tokens: int) -> dict:
-    """Load exactly one precision tier, generate over `image_ids`, write predictions
-    + a meta file. Returns the meta dict. A load failure (OOM or otherwise) is
-    recorded as `fit: false`, not raised — SKILL.md frames "doesn't fit" as an
-    expected, reportable outcome for FP16 in particular, not a bug.
-    """
+    """Run inference on a single precision tier, saving predictions and metadata."""
+
     from mlx_vlm import generate, load
     from mlx_vlm.prompt_utils import apply_chat_template
 
@@ -93,6 +91,10 @@ def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
 
 
 def report(limit: int, split: str):
+    """Generate a report of the quantization sweep, including per-field F1 scores,
+    micro-F1, bootstrap CIs, and paired significance tests. Saves a summary JSON and
+    a precision x field figure."""
+
     gold = ev.load(str(OUT_ROOT / f"{split}.jsonl"))
     field_order = SCALAR_KEYS + [f"line_items.{k}" for k in ("name", "price")]
 
@@ -134,10 +136,6 @@ def report(limit: int, split: str):
                   f"avg_latency={m['avg_latency_s']}s/receipt  "
                   f"peak_memory={m['peak_memory_gb']}GB")
 
-    # Paired significance between tiers (reuses #5's own test — the same "don't claim
-    # a difference without it" discipline eval.py applies to model comparisons; a
-    # precision sweep's F1 gaps are exactly as liable to be noise at n=60 as any other
-    # comparison, so this isn't optional polish, it's what makes the F1 table trustworthy.
     tiers_present = [t for t in TIER_ORDER if t in preds_by_tier]
     if len(tiers_present) > 1:
         print("\n=== paired significance (micro-F1, 1000-resample bootstrap) ===")
@@ -163,7 +161,7 @@ def report(limit: int, split: str):
         n_tiers = len(f1_table)
         bar_w = 0.8 / max(n_tiers, 1)
         colors = {"FP16": "#2a78d6", "INT8": "#eb6834", "INT4": "#1baf7a"}  # dataviz
-        # skill's categorical slots 1-3 (blue/orange/aqua) — validated CVD-safe order
+        
         x = range(len(field_order))
         for i, t in enumerate(TIER_ORDER):
             if t not in f1_table:

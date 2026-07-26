@@ -23,6 +23,8 @@ MAX_EXAMPLES_PER_CATEGORY = 5    # keep the report skimmable, not a data dump
 
 
 def _digits_only(v):
+    """Return a string of just the digits in v, or empty string if none."""
+
     return re.sub(r"\D", "", str(v))
 
 
@@ -52,6 +54,7 @@ def token_overlap(a, b):
 
 def classify(field, gold_val, pred_val):
     """Return a failure category string, or None if the pair is a match."""
+    
     g_has, p_has = gold_val is not None, pred_val is not None
     if not g_has and not p_has:
         return None
@@ -81,6 +84,8 @@ def classify(field, gold_val, pred_val):
 
 
 def analyze_receipt(rid, gold, pred, counts, examples):
+    """Analyze a single receipt, updating counts and examples dicts with failure categories."""
+
     def record(field, category, g, p):
         counts[field][category] += 1
         if len(examples[(field, category)]) < MAX_EXAMPLES_PER_CATEGORY:
@@ -111,6 +116,8 @@ def analyze_receipt(rid, gold, pred, counts, examples):
 
 
 def build_taxonomy(gold_by_id, pred_by_id):
+    """Build a failure taxonomy for a set of receipts, returning counts and examples dicts."""
+
     counts = defaultdict(lambda: defaultdict(int))
     examples = defaultdict(list)
     ids = [i for i in gold_by_id if i in pred_by_id]
@@ -124,6 +131,8 @@ CATEGORY_ORDER = [MISSING, HALLUCINATED, DIGIT_TRANSPOSED, NUMERIC_NEAR,
 
 
 def print_report(name, counts, examples, n):
+    """Print a human-readable report of the failure taxonomy, including counts and examples."""
+
     print(f"\n=== failure taxonomy: {name}  (n={n} receipts) ===\n")
     col_w = max(len(c) for c in CATEGORY_ORDER) + 2
     header = f"{'field':<24}" + "".join(f"{c:>{col_w}}" for c in CATEGORY_ORDER)
@@ -155,6 +164,8 @@ def print_report(name, counts, examples, n):
 
 
 def run(gold_path, pred_path):
+    """Run a failure taxonomy analysis on a gold/pred pair of JSONL files, printing a report."""
+
     gold = ev.load(gold_path)
     pred = ev.load(pred_path)
     counts, examples, n = build_taxonomy(gold, pred)
@@ -163,6 +174,8 @@ def run(gold_path, pred_path):
 
 
 def _smoke():
+    """Run a synthetic smoke test of the taxonomy analysis, with a small gold/pred pair."""
+
     gold = [
         {"image_id": "r1", "store": "Trader Joes", "date": "2026-01-05",
          "subtotal": "10.00", "tax": "0.80", "total": "10.80",

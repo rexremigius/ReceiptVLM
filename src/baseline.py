@@ -26,14 +26,8 @@ FIELD_KEYWORD_RES = [SUBTOTAL_RE, TAX_RE, TIP_RE, TOTAL_RE]  # exclude these lin
 
 
 def ocr_lines(image_path: Path) -> list[str]:
-    """OCR the receipt and return non-empty lines in reading order.
+    """Run OCR on an image and return a list of non-empty lines."""
 
-    Grayscale + 2x upscale turned a mostly-unreadable scan into one where SUBTOTAL/TAX/
-    TOTAL amounts all came through cleanly in testing — cheap, generic preprocessing,
-    not per-receipt tuning. Tried also forcing `--psm 6` (uniform block of text) on top
-    of that: it helped that one receipt but wrecked OCR on a sparser-layout receipt
-    (legible text became noise), so we leave psm on Tesseract's automatic mode.
-    """
     img = ImageOps.grayscale(Image.open(image_path))
     img = img.resize((img.width * 2, img.height * 2))
     text = pytesseract.image_to_string(img)
@@ -41,7 +35,8 @@ def ocr_lines(image_path: Path) -> list[str]:
 
 
 def last_money_match(line: str) -> tuple[str | None, int]:
-    """Rightmost money amount on a line, and where it starts (for name/price splits)."""
+    """Return the last money match in a line, and its start index, or (None, -1) if none."""
+
     matches = list(MONEY_RE.finditer(line))
     if not matches:
         return None, -1
@@ -50,14 +45,8 @@ def last_money_match(line: str) -> tuple[str | None, int]:
 
 
 def find_field(lines: list[str], keyword_re: re.Pattern) -> str | None:
-    """Keyword-anchored amount for one scalar money field.
+    """Return the last money match on a line that contains a keyword, or None if none."""
 
-    Fields like TOTAL are often printed more than once (a running tally, then the
-    final tender line). We take the *last* keyword match in the receipt — the
-    bottom-most occurrence is consistently the authoritative one — falling back to
-    the following line if the keyword line itself has no amount (some layouts put
-    the label and value on separate lines).
-    """
     candidate = None
     for i, line in enumerate(lines):
         if not keyword_re.search(line):
@@ -71,6 +60,8 @@ def find_field(lines: list[str], keyword_re: re.Pattern) -> str | None:
 
 
 def find_date(lines: list[str]) -> str | None:
+    """Return the first date match in the lines, or None if none."""
+    
     for line in lines:
         m = DATE_NUMERIC_RE.search(line) or DATE_MONTH_RE.search(line)
         if m:
@@ -79,10 +70,8 @@ def find_date(lines: list[str]) -> str | None:
 
 
 def find_line_items(lines: list[str]) -> list[dict]:
-    """Line + trailing-price heuristic: rightmost money match on a line is the price,
-    the text before it is the name. Lines already claimed by a scalar field keyword
-    are excluded so subtotal/tax/tip/total don't double as line items.
-    """
+    """Return a list of line items, each being a dict with keys "name" and "price"."""
+
     items = []
     for line in lines:
         if any(r.search(line) for r in FIELD_KEYWORD_RES):
@@ -98,6 +87,8 @@ def find_line_items(lines: list[str]) -> list[dict]:
 
 
 def build_record(image_id: str) -> dict:
+    """Build a receipt record from an image ID, using OCR to extract fields and line items."""
+
     lines = ocr_lines(DATA_ROOT / image_id)
     record = {"image_id": image_id, "store": lines[0] if lines else None}
     record["date"] = find_date(lines)
@@ -110,6 +101,8 @@ def build_record(image_id: str) -> dict:
 
 
 def load_image_ids(split: str, limit: int | None) -> list[str]:
+    """Load image IDs from a JSONL file for the given split, optionally limiting the number of records."""
+
     suffix = f".subset{limit}" if limit else ""
     exact = OUT_ROOT / f"{split}{suffix}.jsonl"
     src = exact if exact.exists() else OUT_ROOT / f"{split}.jsonl"
@@ -121,6 +114,9 @@ def load_image_ids(split: str, limit: int | None) -> list[str]:
 
 
 def process_split(split: str, limit: int | None):
+    """Process a split (train/test) of receipts, extracting fields and line items, 
+    and save the results to JSONL files."""
+
     image_ids = load_image_ids(split, limit)
     records = [build_record(image_id) for image_id in image_ids]
 

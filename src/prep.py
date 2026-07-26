@@ -26,6 +26,8 @@ SCHEMA_KEYS = ["store", "date", "tax", "tip", "subtotal", "total"]  # line_items
 
 
 def load_class_names(path: Path) -> dict[int, str]:
+    """Load the WildReceipt class list, returning a dict mapping label ID to name."""
+
     names = {}
     for line in path.read_text().splitlines():
         line = line.rstrip()
@@ -38,12 +40,15 @@ def load_class_names(path: Path) -> dict[int, str]:
 
 def box_center(box: list[float]) -> tuple[float, float]:
     """Center (y, x) of the 4-corner polygon. y first because we sort y-then-x."""
+
     xs = box[0::2]
     ys = box[1::2]
     return (sum(ys) / len(ys), sum(xs) / len(xs))
 
 
 def box_height(box: list[float]) -> float:
+    """Height of the 4-corner polygon."""
+
     ys = box[1::2]
     return max(ys) - min(ys)
 
@@ -52,15 +57,11 @@ _MONEY_TOKEN_RE = re.compile(r"-?[\d,]*\.?\d+")
 
 
 def _fix_decimal_separator(num_text: str) -> str:
-    """Disambiguate ',' as a European decimal separator vs a US thousands separator.
-
-    A dot elsewhere in the string makes the comma's role unambiguous (thousands
-    separator, e.g. "1,299.00" -> "1299.00"), so we just strip it. With no dot,
-    a single comma followed by exactly two digits ("24,65") is read as a decimal
-    separator; a comma followed by three digits ("1,299") is read as a thousands
-    grouping. Multiple commas are always thousands separators, since a real
-    number has at most one decimal point.
+    """Fix a money string that may have commas as thousands separators or as a decimal
+    separator. If there's a single comma and two digits after it, treat it as a decimal
+    separator; otherwise, strip all commas. Returns the cleaned string.
     """
+
     if "." in num_text:
         return num_text.replace(",", "")
     if num_text.count(",") == 1:
@@ -71,22 +72,10 @@ def _fix_decimal_separator(num_text: str) -> str:
 
 
 def clean_money(text: str) -> str | None:
-    """Extract the numeric portion of a money string ('$12.34' -> '12.34').
-
-    Money fields can be built from more than one WildReceipt box joined with a
-    space (see build_record). The old version stripped that space before
-    parsing, which let two *separate* boxes' digits fuse into one bogus number
-    (observed in real data: "58.92" + "58" -> "58.9258"). Instead, each
-    space-separated token is checked on its own, and we take the first one
-    that actually contains a number - a stray duplicate box just gets ignored
-    rather than merged in.
-
-    Tradeoff: if a single value were ever genuinely OCR-split across two boxes
-    (e.g. "5" and ".00" as separate boxes for one number "5.00"), this would
-    now only pick up "5" and miss the rest. We haven't seen that case in the
-    data so far - duplicate/stray boxes are the pattern that actually shows up -
-    but flagging it since it's the real cost of this fix.
+    """Return a cleaned money string, or None if none found. Strips $, commas, letters,
+    and fixes decimal separators. Returns the last money match in the text.
     """
+
     for token in text.split():
         m = _MONEY_TOKEN_RE.search(token)
         if m:
@@ -95,22 +84,17 @@ def clean_money(text: str) -> str | None:
 
 
 def _median(xs: list[float]) -> float:
+    """Return the median of a list of numbers, or 0.0 if empty."""
+    
     s = sorted(xs)
     return s[len(s) // 2] if s else 0.0
 
 
 def build_line_items(anns: list[dict]) -> list[dict]:
-    """Pair each Prod_item_value name with its Prod_price_value price by y-proximity.
-
-    WildReceipt puts names in a left column and prices in a right column, but the
-    price box sits on a systematically offset baseline from its name (seen: price
-    ~35-50px below the name, or slightly above it) — never the same y. So a naive
-    same-row match drops most prices. Instead we walk items top-down (y-then-x
-    sorted, since source box order is not reading order) and give each item the
-    nearest still-unused price. The search band is scaled to the median gap between
-    consecutive items: that gap is much larger than the name->price offset, so the
-    band bridges the offset without ever crossing into an adjacent item's price.
+    """Return a list of line items, each being a dict with keys "name" and "price", by
+    matching item-name boxes to the nearest price box on the same horizontal band.
     """
+
     items, prices, heights = [], [], []
     for a in anns:
         if a["label"] not in (ITEM_LABEL, PRICE_LABEL):
@@ -153,6 +137,10 @@ def build_line_items(anns: list[dict]) -> list[dict]:
 
 def build_record(receipt: dict, class_names: dict[int, str],
                  dropped: Counter) -> dict:
+    """Build a receipt record from a WildReceipt JSON object, using the class names to
+    map label IDs to schema fields. Returns a dict with keys SCHEMA_KEYS + "line_items".
+    """
+
     anns = receipt["annotations"]
 
     # Collect scalar-field boxes; a field can span multiple boxes (e.g. "$" + number).
@@ -179,12 +167,19 @@ def build_record(receipt: dict, class_names: dict[int, str],
 
 
 def validate(record: dict) -> None:
+    """Check that a record has all required keys and that line_items is a list."""
+
     for key in SCHEMA_KEYS + ["line_items"]:
         assert key in record, f"missing key {key} in {record.get('image_id')}"
     assert isinstance(record["line_items"], list)
 
 
 def process_split(split: str, class_names: dict[int, str], limit: int | None):
+    """Process a split (train/test) of the WildReceipt dataset, building receipt records
+    and saving them to JSONL files. Returns the list of records, a summary dict, and the
+    paths of the output files.
+    """
+
     src = DATA_ROOT / f"{split}.txt"
     records, dropped = [], Counter()
     with src.open() as f:

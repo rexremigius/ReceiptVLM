@@ -9,11 +9,15 @@ TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
 
 def _strip_fence(text: str) -> str:
+    """If the text is fenced in a ```json block, return the inner text; otherwise return the text."""
+
     m = CODE_FENCE_RE.search(text)
     return m.group(1) if m else text
 
 
 def _outer_braces(text: str) -> str | None:
+    """Return the substring of text that is enclosed in the outermost braces, or None if none found."""
+
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
         return None
@@ -21,16 +25,16 @@ def _outer_braces(text: str) -> str | None:
 
 
 def _fix_trailing_commas(text: str) -> str:
+    """Remove trailing commas before closing braces/brackets, which are invalid in JSON."""
+    
     return TRAILING_COMMA_RE.sub(r"\1", text)
 
 
 def _fix_python_literal(text: str) -> dict | None:
-    """Model output sometimes degenerates into Python-repr-style pseudo-JSON — single
-    quotes, `None`/`True`/`False` — instead of real JSON. `ast.literal_eval` parses
-    that dialect directly; regex-swapping single quotes for double quotes was
-    considered and rejected, since it breaks on any string value that itself
-    contains an apostrophe (e.g. store name "Wendy's").
+    """Attempt to parse a Python literal dict (single quotes, None, etc.) and return it as a dict.
+    Returns None if the text is not a valid Python literal dict.
     """
+
     try:
         val = ast.literal_eval(text)
     except (ValueError, SyntaxError):
@@ -39,16 +43,10 @@ def _fix_python_literal(text: str) -> dict | None:
 
 
 def _close_truncated(text: str) -> str:
-    """Best-effort close-out for JSON cut off mid-generation by a max_tokens limit.
-
-    Walks the text tracking bracket depth (skipping the inside of strings so a stray
-    brace in a value doesn't miscount) and the position right after the last complete
-    comma at any nesting depth. If the text ends *inside* an unterminated string (the
-    common truncation case — cut off mid key or mid value), trims back to that last
-    safe boundary before closing; if it ends cleanly outside a string (e.g. right
-    after a complete nested `}`), closes as-is without trimming, since trimming there
-    would discard an already-complete trailing element.
+    """Attempt to close a truncated JSON string by adding closing braces/brackets. Returns the
+    closed string, which may still be invalid JSON if the truncation was mid-string or mid-structure.
     """
+
     stack: list[str] = []
     in_string = False
     escape = False
@@ -100,14 +98,15 @@ def _close_truncated(text: str) -> str:
 
 
 def repair_json(raw: str) -> tuple[dict | None, str]:
-    """Extract and repair a JSON object from a model's raw completion.
-
-    Returns (parsed, status). `parsed` is the dict, or None on hard failure — callers
-    must still emit a record (all-null fields) for that receipt, per SKILL.md #5/#9:
-    an unparseable receipt is a scored failure, not a dropped one. `status` is one of
-    "clean" / "repaired_trailing_comma" / "repaired_python_literal" /
-    "repaired_truncation" / "hard_failure", for the caller to tally.
+    """Attempt to repair a raw string that should be JSON, returning a tuple of (parsed dict or None,
+    status string). Status is one of:
+    - "clean": valid JSON, no repair needed
+    - "repaired_trailing_comma": valid JSON after removing trailing commas
+    - "repaired_python_literal": valid JSON after converting from Python literal syntax
+    - "repaired_truncation": valid JSON after closing truncated structure
+    - "hard_failure": could not parse as JSON
     """
+
     candidate = _outer_braces(_strip_fence(raw))
     if candidate is None:
         return None, "hard_failure"
@@ -137,6 +136,8 @@ def repair_json(raw: str) -> tuple[dict | None, str]:
 
 
 def _smoke():
+    """Run a smoke test of the repair_json function on various cases, printing results."""
+
     cases = [
         ("clean", '{"store": "CVS", "total": "5.40", "line_items": []}'),
         ("clean (fenced)",

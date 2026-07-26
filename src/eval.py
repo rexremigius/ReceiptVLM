@@ -18,6 +18,7 @@ CHAR_FALLBACK_THRESHOLD = 0.75  # high bar: only trust char-ratio on single-toke
 
 
 def normalize_text(v):
+    """Return a lowercased, whitespace-normalized string, or None if v is None/empty."""
     if v is None:
         return None
     s = re.sub(r"\s+", " ", str(v).strip().lower())
@@ -25,6 +26,7 @@ def normalize_text(v):
 
 
 def normalize_num(v):
+    """Return a float if v is a number, or None if not. Strips $, commas, letters."""
     if v is None:
         return None
     s = re.sub(r"[^\d.\-]", "", str(v))  # strip $, commas, letters
@@ -38,12 +40,8 @@ QUANTITY_PREFIX_RE = re.compile(r"^\s*\d+\s*x\s*", re.IGNORECASE)
 
 
 def strip_quantity_prefix(text):
-    """Strip a leading quantity marker like '4x' from a line-item name.
+    """Strip a leading quantity prefix (e.g. "2x ") from a line-item name, if present."""
 
-    prep.py's schema has no quantity field, so gold names never carry one -
-    but some model output does. Left alone, that turns an otherwise-correct
-    prediction into a complete non-match, both for alignment and scoring.
-    """
     if text is None:
         return text
     return QUANTITY_PREFIX_RE.sub("", text)
@@ -54,6 +52,7 @@ LINE_ITEM_NAME_FIELD = f"{LINE_ITEM_FIELD}.{ALIGN_KEY}"
 
 def match(field, gold, pred):
     """True if two non-null values agree under the field's comparison rule."""
+
     leaf = field.rsplit(".", 1)[-1]  # "line_items.price" -> "price"
     if leaf in NUMERIC_FIELDS:
         g, p = normalize_num(gold), normalize_num(pred)
@@ -72,13 +71,8 @@ def match(field, gold, pred):
 
 
 def desc_score(a, b):
-    """Similarity for line-item alignment. Word-Jaccard misses WildReceipt's
-    single-token OCR item names, where one misread letter drops it straight
-    to 0 - so a char-ratio fallback applies, but only for single-token names
-    above a high bar. Below that bar, short unrelated words false-match on
-    coincidental character overlap (e.g. "Gyros" vs "GrossesWasser" scores
-    0.44 on pure char-ratio despite being unrelated items).
-    """
+    """Return a similarity score in [0,1] for two line-item names, ignoring quantity prefixes."""
+
     a, b = strip_quantity_prefix(a), strip_quantity_prefix(b)
     na, nb = normalize_text(a), normalize_text(b)
     ta = set(re.findall(r"\w+", na or ""))
@@ -96,14 +90,12 @@ def desc_score(a, b):
 
 
 def align_line_items(gold_items, pred_items):
-    """Greedy 1:1 alignment on description. Returns (pairs, gold_lo, pred_lo).
-
-    Ties (e.g. duplicate item names, or the same OCR typo repeated across two
-    identical products) must resolve to the lowest-index unused candidate, not
-    the last one seen - receipts commonly repeat a name with a different price
-    per row, and preferring the last tie flips those rows' alignment even
-    though gold and pred already list them in the same order.
+    """Align gold/pred line items by similarity of their names, returning a list of
+    (gold_index, pred_index) pairs, plus lists of leftover gold/pred indices that
+    didn't match anything. Each gold item is aligned to at most one pred item, and vice
+    versa, with a minimum similarity threshold for alignment.
     """
+
     pairs = []
     used = set()
     gold_leftover, pred_leftover = [], list(range(len(pred_items)))
@@ -125,7 +117,8 @@ def align_line_items(gold_items, pred_items):
 
 
 def count_pair(field, gold, pred, counts):
-    """Update TP/FP/FN for one field given a single gold/pred value pair."""
+    """Increment counts[field] for a single gold/pred pair, using the field's comparison rule."""
+
     g_has, p_has = gold is not None, pred is not None
     if g_has and p_has:
         if match(field, gold, pred):
@@ -141,6 +134,7 @@ def count_pair(field, gold, pred, counts):
 
 def score_receipt(gold, pred, counts):
     """Accumulate per-field counts for one receipt into `counts`."""
+
     for f in SCALAR_FIELDS:
         count_pair(f, gold.get(f), pred.get(f), counts)
 
@@ -171,6 +165,7 @@ def prf(c):
 
 def evaluate(gold_by_id, pred_by_id):
     """Return per-field PRF + micro PRF over the intersection of ids."""
+    
     counts = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     ids = [i for i in gold_by_id if i in pred_by_id]
     for i in ids:
@@ -185,11 +180,8 @@ def evaluate(gold_by_id, pred_by_id):
 
 
 def _receipt_micro_counts(gold_by_id, pred_by_id, ids):
-    """TP/FP/FN per receipt, summed across fields. A receipt's alignment is
-    deterministic - bootstrap resampling only changes which receipts get
-    redrawn, not their score - so this is computed once per receipt rather
-    than redoing line-item alignment on every resample.
-    """
+    """Return a dict keyed by receipt ID, with values being (tp, fp, fn) counts for that receipt."""
+
     out = {}
     for i in ids:
         c = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
@@ -221,20 +213,12 @@ def bootstrap_micro_f1(gold_by_id, pred_by_id, n=1000, seed=0):
 
 
 def paired_bootstrap_test(gold_by_id, pred_a_by_id, pred_b_by_id, n=1000, seed=0):
-    """Paired bootstrap significance test for whether system B's micro-F1
-    differs from system A's.
-
-    This is NOT the same as comparing two independently-computed CIs (which is
-    all `bootstrap_micro_f1` gives you per system) - two overlapping CIs don't
-    tell you the difference itself is insignificant, and two non-overlapping
-    CIs don't reliably tell you it IS significant either. Pairing matters: each
-    resample draws the same set of receipts for both systems, so what's
-    measured each iteration is A and B's score on identical data, and the
-    quantity of interest is the distribution of (F1_b - F1_a) directly.
-
-    Returns a dict with the mean difference, its 95% CI, and an approximate
-    two-sided bootstrap p-value (2x the smaller tail fraction crossing zero).
+    """Paired bootstrap test for the difference in micro-F1 between two prediction sets.
+    Returns a dict with keys "mean_diff", "ci" (95% percentile CI),
+    and "p_approx" (two-sided p-value approximation), or None if there are no receipts
+    in common between the two prediction sets and the gold set.
     """
+    
     rng = random.Random(seed)
     ids = [i for i in gold_by_id if i in pred_a_by_id and i in pred_b_by_id]
     if not ids:
@@ -281,6 +265,7 @@ def load(path):
 
 
 def print_report(name, per_field, micro, n, ci):
+    """Print a human-readable report of per-field and micro-F1 scores, plus bootstrap CI."""
     p, r, f1 = micro
     print(f"\n=== {name}  (n={n} receipts) ===")
     print(f"{'field':<24}{'P':>8}{'R':>8}{'F1':>8}")
@@ -295,6 +280,8 @@ def print_report(name, per_field, micro, n, ci):
 
 
 def run(gold_path, pred_paths, boot=1000):
+    """Run evaluation of one or more prediction files against a gold file, printing per-field and 
+    micro-F1 scores, plus bootstrap CIs and paired significance tests."""
     gold = load(gold_path)
     results = {}
     for pp in pred_paths:

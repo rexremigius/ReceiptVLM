@@ -18,12 +18,10 @@ ARITH_TOL = 0.02
 
 
 def arithmetic_consistency(pred: dict) -> bool | None:
-    """Whether the PREDICTED subtotal+tax+tip lands within 2c of the PREDICTED total.
-    Ground truth is never available at serving time, so this can only check the
-    model's values against themselves, never against the answer key — that's exactly
-    why it's a confidence signal and not a scoring one. None if there isn't enough of
-    the receipt present to check (e.g. subtotal never extracted at all).
-    """
+    """Whether the predicted subtotal+tax+tip lands within 2c of the predicted total,
+    or None if there isn't enough of the receipt present to check (e.g. subtotal never
+    extracted at all)."""
+
     sub, tax, tot = (ev.normalize_num(pred.get(f)) for f in ("subtotal", "tax", "total"))
     if sub is None or tax is None or tot is None:
         return None
@@ -40,10 +38,9 @@ def format_valid(field: str, value) -> bool:
 
 
 def raw_score(field: str, pred: dict, consistent: bool | None) -> float:
-    """Heuristic raw score in [0, 1]: format validity, plus (money fields only)
-    arithmetic consistency. Deliberately uncalibrated — `fit_platt`/`apply_platt` below
-    turn it into a real probability against actual outcomes. This is one of up to two
-    features fed to calibration; `logprob_feature` below is the other, when available.
+    """Raw heuristic score in [0, 1] for one predicted scalar field, or None when there's
+    nothing to say — either no value at all, or a valid value but no arithmetic signal
+    (e.g. store/date). Callers tell the two apart via `pred.get(field)`.
     """
     if not format_valid(field, pred.get(field)):
         return 0.05
@@ -55,35 +52,25 @@ def raw_score(field: str, pred: dict, consistent: bool | None) -> float:
 
 
 def logprob_feature(field: str, pred: dict) -> float | None:
-    """exp(mean token logprob) for this field's value in the model's raw completion —
-    a natural [0, 1]-ish quantity (geometric-mean per-token probability of what the
-    model actually emitted), #8's third signal. None unless the prediction file was
-    generated with `zeroshot.py --capture-logprobs` (opt-in there, since it adds
-    bookkeeping most callers don't need) and the field's key was actually found in the
-    raw text this receipt's `_field_logprobs` was computed from.
+    """exp(mean token logprob) for the predicted field's key text span, or None if the
+    prediction file wasn't generated with `--capture-logprobs` or the key text span
+    wasn't found.
     """
+
     lp = (pred.get("_field_logprobs") or {}).get(field)
     return float(np.exp(lp)) if lp is not None else None
 
 
-# --- line-item confidence -----------------------------------------------------------
-# Real per-item signal, replacing the old hardcoded "0.6 if any items else 0.0" constant.
+# --- line-item-specific features ----------------------
 
-# Two narrow, low-false-positive name-noise checks, kept deliberately small: a broader
-# "stray punctuation ratio" or "asterisk-wrapped" rule was tried first and rejected
-# after checking real `finetuned_test.jsonl` line items — receipts legitimately use
-# parenthetical modifiers ("Houji-cha(Hot)", "PinotBlanc(g)") and asterisk-wrapped POS
-# annotations ("*SPECPREP*", "*33CLZERO*") that a punctuation-ratio rule flags as noise
-# but are real, correct extractions. What actually survives as unambiguous noise in the
-# real data: a quote character directly touching a digit (real contractions/possessives
-# never do this — "Maker'sMark" and "Owners'Wash" don't trigger it, but the one clear
-# real noise example "'AAA'2PK" does), and a `$` immediately followed by a digit inside
-# the name (a price fragment that leaked into the name field).
 _QUOTE_DIGIT_RE = re.compile(r"[\"'](?=\d)|(?<=\d)[\"']")
 _PRICE_LEAK_RE = re.compile(r"\$\d")
 
 
 def format_valid_line_item_name(name) -> bool:
+    """Whether a line-item name is non-empty, not just a single quote or digit, and
+    doesn't contain a quoted digit or a leaked price (e.g. "2x $3.99")."""
+    
     if name is None:
         return False
     s = str(name)
@@ -95,9 +82,9 @@ def format_valid_line_item_name(name) -> bool:
 
 
 def line_item_logprob_feature(idx: int, pred: dict) -> float | None:
-    """exp(mean token logprob) for the idx-th line item's `{...}` object — the line-item
-    analog of `logprob_feature`. None unless the prediction file was generated with
-    `--capture-logprobs`, or this item's span wasn't found (e.g. truncated generation).
+    """exp(mean token logprob) for the predicted line item's name+price text span, or
+    None if the prediction file wasn't generated with `--capture-logprobs` or the
+    line-item index is out of range or the logprobs for that item are missing.
     """
     lps = pred.get("_line_item_logprobs")
     if lps is None or idx >= len(lps) or lps[idx] is None:
@@ -107,23 +94,12 @@ def line_item_logprob_feature(idx: int, pred: dict) -> float | None:
 
 def line_item_consistency(items: list[dict], subtotal, total=None, tax=None,
                           tip=None) -> dict[int, bool | None]:
-    """Per-item consistency: does sum(predicted item prices) reconcile with the
-    predicted subtotal, and if not, which single item looks most like the culprit?
-    A null line-item price gets no consistency opinion (~12% of gold items also have no
-    price, so it's not always a miss).
-
-    Falls back to an IMPLIED subtotal (`total - tax - tip`) when `subtotal` is missing
-    but `total` is present. tax and tip default to 0 only when genuinely absent from the
-    prediction (a receipt can legitimately have zero of either), matching
-    `arithmetic_consistency`'s own tip
-    convention above.
-
-    Returns {item_index: True} for every priced item once the aggregate already
-    reconciles (within 2c); {item_index: False} for the one item whose removal would
-    best explain the gap, when removing it cuts the discrepancy by at least half;
-    {item_index: None} (no opinion, discrepancy exists but isn't clearly this item's
-    fault) otherwise. Items with no price aren't included in the returned dict at all.
+    """For each line item with a price, whether the predicted subtotal+tax+tip lands
+    within 2c of the predicted total, or None if there isn't enough of the receipt
+    present to check (e.g. subtotal never extracted at all). Returns a dict keyed by
+    line-item index, with values being True/False/None for each item with a price.
     """
+
     target = ev.normalize_num(subtotal) if subtotal is not None else None
     if target is None:
         implied_total = ev.normalize_num(total) if total is not None else None
@@ -175,11 +151,12 @@ def line_item_raw_score(item: dict, consistency_flag: bool | None) -> float | No
 # small multi-feature logistic regression instead of a 1-coefficient one.
 
 def fit_platt(X: np.ndarray, outcomes: np.ndarray) -> np.ndarray:
-    """Fit P(correct) = sigmoid(X @ w + b) by maximum likelihood. No closed form for
-    logistic regression (unlike OLS), so this minimizes negative log-likelihood
-    directly via scipy — a handful of parameters doesn't need an sklearn dependency.
-    Returns the parameter vector [w..., b].
-    """
+    """Fit a logistic regression to map raw feature(s) to calibrated probability.
+    `X` is shape (n_samples, n_features), `outcomes` is shape (n_samples,) with 0/1
+    values. Returns a 1D array of length n_features+1: the first n_features are the
+    learned weights, the last is the learned bias term. The caller can then compute
+    calibrated probabilities for new data using `apply_platt`."""
+    
     X = np.atleast_2d(X)
     n_features = X.shape[1]
 
@@ -232,12 +209,11 @@ def reliability_diagram(probs: np.ndarray, outcomes: np.ndarray, n_bins: int = 1
 
 def risk_coverage(probs: np.ndarray, outcomes: np.ndarray,
                   levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5)):
-    """'At X% coverage (keeping only the X% most-confident predictions and treating
-    the rest as needing manual review), what fraction of the kept ones are actually
-    correct?' — the headline number SKILL.md asks for ("90% coverage -> X% precision").
-    Sorted descending by calibrated probability; a stable sort keeps ties in original
-    (receipt) order so the coverage cutoffs are deterministic across runs.
-    """
+    """For each coverage level in `levels`, compute the precision (empirical accuracy)
+    of the top-k predicted values, where k is the number of predictions needed to cover
+    that fraction of the dataset. Returns a list of dicts with keys "coverage",
+    "n_kept", and "precision" (rounded to 4 decimal places)."""
+
     order = np.argsort(-probs, kind="stable")
     sorted_outcomes = outcomes[order]
     n = len(outcomes)
@@ -253,27 +229,10 @@ def risk_coverage(probs: np.ndarray, outcomes: np.ndarray,
 
 def collect(gold_by_id: dict, pred_by_id: dict, ids: list[str], use_logprob: bool,
            use_li_logprob: bool = False):
-    """Per scalar field: (receipt_id, feature_vector, is_correct) for every receipt
-    where the model predicted a non-null value. Confidence only applies to values the
-    model actually displayed — a field the model left blank isn't a "should you trust
-    this" question, it's a recall miss for #5/#6 to count, not this module.
+    """Collect raw features and correctness labels for each predicted field/line item
+    across a set of receipts, for later calibration and evaluation. Returns a dict
+    keyed by field name, with values being lists of tuples (receipt_id, feature_vector, correct_bool)."""
 
-    `feature_vector` is `[raw_score]` normally, or `[raw_score, logprob_feature]` when
-    this prediction file was generated with `--capture-logprobs`. A field the model
-    predicted but whose key text couldn't be located for logprob extraction (rare —
-    see `field_avg_logprob`'s note) gets a neutral 0.5 imputed rather than being
-    dropped, so a single edge case doesn't shrink that field's sample size.
-
-    Line items are folded into the same per_field dict under the key "line_items",
-    one row per *predicted* item (not per receipt) with the same (id, features,
-    correct) shape — "correct" reuses eval.py's own `align_line_items` alignment plus
-    its `match()` on both name and price, the identical definition #5/#6 score
-    against, so "correct" never means something different here than it does there.
-    Items with a null price are excluded outright. Items with a price but no heuristic
-    signal are excluded too, UNLESS `use_li_logprob` is set — then per-item token
-    logprob becomes a second feature (imputing a neutral 0.5 for the missing half),
-    which stops line-item confidence from degenerating to one shared badge per receipt.
-    """
     per_field = defaultdict(list)
     for rid in ids:
         gold, pred = gold_by_id[rid], pred_by_id[rid]

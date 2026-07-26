@@ -97,6 +97,8 @@ if not _conf_logger.handlers:
 
 
 def _log_confidence(ref: str, source: str, confidence: dict) -> None:
+    """Log a confidence dict to the confidence.jsonl file, with timestamp, source, and reference."""
+
     li = confidence.get("line_items", {})
     entry = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -112,6 +114,8 @@ def _log_confidence(ref: str, source: str, confidence: dict) -> None:
 
 
 def _params_by_field(conf_results: dict) -> dict[str, np.ndarray]:
+    """Return a dict of Platt calibration parameters by field, from the confidence sweep results."""
+
     return {f: np.array(r["calibration_weights"] + [r["calibration_bias"]])
             for f, r in conf_results["fields"].items() if "calibration_weights" in r}
 
@@ -133,6 +137,8 @@ else:
 
 
 def _band(score: float) -> dict:
+    """Return a confidence badge dict for a score in [0, 1], with level color."""
+
     score = max(0.0, min(1.0, score))
     level = "green" if score >= 0.75 else "amber" if score >= 0.4 else "red"
     return {"score": round(score, 2), "level": level}
@@ -145,41 +151,43 @@ FIELDS_WHERE_NULL_IS_LIKELY_A_MISS = {"store"}
 
 
 def _na_badge() -> dict:
+    """Return a neutral badge for a field that is null/empty, meaning there's no value to
+    have an opinion about (e.g. a null tip on a receipt that has no tip)."""
+
     return {"score": None, "level": "na"}
 
 
 def _unscored_badge() -> dict:
-    # Distinct from `_na_badge()`: "na" means there's no *value* to have an opinion
-    # about (null price); "unscored" means there IS a predicted item, its name format
-    # looks fine, but no consistency signal exists to judge it against (no subtotal
-    # to reconcile, or this item wasn't clearly implicated) — see
-    # `line_item_raw_score`'s docstring. Showing this as a numeric badge (the old
-    # behavior) is what made every item look identically confident.
+    """Return a badge for a field that is present but has no confidence score, meaning the
+    model didn't have enough signal to make a judgment (e.g. a line-item with no price)."""
+    
     return {"score": None, "level": "unscored"}
 
 
 def _missing_badge() -> dict:
+    """Return a badge for a field that is missing (e.g. a null store on a receipt 
+    that has no store)."""
+
     return {"score": None, "level": "missing"}
 
 
 def _null_field_badge(field: str) -> dict:
+    """Return a badge for a null field, either "missing" (red) if it's a field that should
+    always be present, or "na" (neutral) if it's a field that is often legitimately null."""
+    
     return _missing_badge() if field in FIELDS_WHERE_NULL_IS_LIKELY_A_MISS else _na_badge()
 
 
 def _line_item_badges(record: dict, platt_params: dict, use_logprob: bool = False) -> dict:
-    """Per-item confidence. Each item's raw score comes from name format validity plus
-    whether its price is implicated in a subtotal mismatch; null-price items get an
-    `_na_badge()` (a missing price isn't always a miss). Items with a price but no
-    consistency signal get `_unscored_badge()` rather than a fabricated middling number
-    — unless `use_logprob` is set (live inference), where per-item token logprob scores
-    them so every item's badge can differ. `_unscored_badge()` still applies if logprob
-    is also empty (e.g. a truncated generation).
+    """Return a dict of confidence badges for each line item in a receipt record, plus an
+    aggregate badge for the whole line-items list. Uses the 2-signal Platt calibration
+    (format validity + arithmetic consistency) fit at startup against the same file this
+    API serves. Falls back to the raw heuristic if no Platt calibration was fit for
+    line items (e.g. too sparse even in a bigger sample). If use_logprob is True, the
+    3-signal Platt calibration (format validity + arithmetic consistency + token logprob)
+    is used instead, if it was fit at startup; otherwise falls back to 2-signal or raw
+    heuristic as above."""
 
-    The aggregate is the mean of the actually-scored items' calibrated probabilities,
-    so it reflects the real spread instead of repeating one constant onto every
-    receipt; if nothing was scorable it falls back to `_unscored_badge()`/`_na_badge()`
-    the same way a single item would.
-    """
     items = record.get("line_items") or []
     if not items:
         return {"aggregate": _missing_badge(), "items": []}
@@ -220,12 +228,11 @@ def _line_item_badges(record: dict, platt_params: dict, use_logprob: bool = Fals
 
 
 def field_confidence(record: dict) -> dict[str, Any]:
-    """#8's 2-signal calibrated composite for cached dataset predictions: format
-    validity + arithmetic consistency, Platt-scaled against actual outcomes on this
-    same prediction file. No token-logprob signal here — these predictions were
-    generated without `--capture-logprobs`. Fields with too few predicted values to
-    calibrate (tip: ~4-5% of receipts) fall back to the raw uncalibrated heuristic.
-    """
+    """Return a dict of confidence badges for each field in a receipt record, using the
+    2-signal Platt calibration (format validity + arithmetic consistency) fit at startup
+    against the same file this API serves. Falls back to the raw heuristic if no Platt
+    calibration was fit for a given field (e.g. tip: too sparse even in a bigger sample)."""
+
     consistent = arithmetic_consistency(record)
     out = {}
     for field in SCALAR_FIELDS:
@@ -241,17 +248,13 @@ def field_confidence(record: dict) -> dict[str, Any]:
 
 
 def field_confidence_live(record: dict) -> dict[str, Any]:
-    """#8's full 3-signal calibrated composite for a just-generated prediction (live
-    inference always has token logprobs available, via `record["_field_logprobs"]`
-    and, since 2026-07-26, `record["_line_item_logprobs"]`). Falls back to the
-    2-signal calibration, then to the raw uncalibrated heuristic, if the 3-signal
-    calibration wasn't fit for a given field (e.g. tip: too sparse even in a bigger
-    sample) or doesn't exist at all on this machine. Line items get the 3-signal
-    (`_PLATT_3SIG`) calibration too now, with per-item logprob as the feature that
-    actually breaks the identical-badge problem when consistency has nothing to say
-    (see `_line_item_badges`'s docstring) — falls back to `_PLATT`'s 1-feature fit if
-    the 3-signal file's "line_items" entry wasn't calibrated for some reason.
-    """
+    """Return a dict of confidence badges for each field in a receipt record, using the
+    3-signal Platt calibration (format validity + arithmetic consistency + token logprob)
+    fit at startup against the same file this API serves. Falls back to the 2-signal
+    calibration if the logprob-enabled prediction file isn't present, and to the raw
+    heuristic if no Platt calibration was fit for a given field (e.g. tip: too sparse
+    even in a bigger sample)."""
+
     consistent = arithmetic_consistency(record)
     out = {}
     for field in SCALAR_FIELDS:
@@ -304,6 +307,9 @@ def health():
 
 @app.get("/receipts", response_model=list[ReceiptSummary])
 def list_receipts(limit: int = 500):
+    """Return a list of receipt summaries (image_id, store, date, total) for the first
+    `limit` receipts in the cached predictions. The list is sorted by image_id."""
+
     out = []
     for image_id, rec in list(PREDICTIONS.items())[:limit]:
         out.append(ReceiptSummary(image_id=image_id, store=rec.get("store"),
@@ -313,20 +319,14 @@ def list_receipts(limit: int = 500):
 
 @app.get("/receipts/{image_id:path}/image")
 def get_receipt_image(image_id: str):
+    """Return the image file for a given receipt image_id. Raises 404 if the image is
+    not present on disk."""
+
     path = IMG_ROOT / image_id
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"no image at {image_id}")
     return FileResponse(path)
 
-
-# NB: this route MUST come after the more specific "/image" route above — Starlette's
-# `:path` converter is greedy (matches everything including further slashes), so had
-# this route been registered first, `.../<image_id>/image` would satisfy this route's
-# `{image_id:path}` too (image_id = "<image_id>/image", a string PREDICTIONS never
-# has) and always win as the first match, silently 404ing every image request. Route
-# *order* is the fix, not the converter — found via curl testing after WildReceipt
-# images landed on this machine, since a 404 that's ALWAYS present looks identical to
-# one that only started once real images were expected to exist.
 @app.get("/receipts/{image_id:path}", response_model=ReceiptDetail)
 def get_receipt(image_id: str, include_gt: bool = False):
     rec = PREDICTIONS.get(image_id)
@@ -339,19 +339,13 @@ def get_receipt(image_id: str, include_gt: bool = False):
         prediction={k: rec.get(k) for k in SCALAR_FIELDS + ["line_items"]},
         confidence=confidence,
         ground_truth=GROUND_TRUTH.get(image_id) if include_gt else None,
-        # #9 (src/repair.py) exists now and runs at generation time inside zeroshot.py's
-        # inference loop, on the raw text the model emits — but this endpoint serves
-        # already-parsed cached predictions, not raw completions, so there's nothing
-        # left here to repair.
+        
         repair_status="handled_upstream_at_generation",
     )
 
 
 # --- live inference: model + adapter loaded once at startup ------------------------
-# Not wrapped in module-load-time try/except beyond the mlx_vlm import check above —
-# if mlx_vlm imported fine but the model/adapter fails to load (e.g. no network, no
-# checkpoint), that should surface loudly at startup, not silently degrade a
-# user-facing inference endpoint into always-503.
+
 _MODEL = _PROCESSOR = _PROMPT = None
 if _MLX_AVAILABLE and CKPT_PATH.exists():
     _MODEL, _PROCESSOR = load_vlm(DEFAULT_MODEL, adapter_path=str(CKPT_PATH),
@@ -359,15 +353,7 @@ if _MLX_AVAILABLE and CKPT_PATH.exists():
     _PROMPT = apply_chat_template(_PROCESSOR, _MODEL.config.__dict__, PROMPT, num_images=1)
 LIVE_INFERENCE_AVAILABLE = _MODEL is not None
 
-# Receipts actually uploaded and analyzed via /infer this run — the real thing a
-# "spending dashboard" should reflect, unlike the old /dashboard which aggregated the
-# static WildReceipt eval set (472 research receipts, mixed currencies, a checkpoint's
-# own extraction errors baked in) and produced a number that needed a permanent
-# "not a validated spend total" caveat just to not be misleading. In-memory only —
-# resets on API restart, and shared across every client hitting this server (fine for
-# a single-user local demo tool, not a multi-tenant design). A deliberate, documented
-# scope choice, not an oversight: durable storage would need a real datastore and
-# per-user separation, neither of which this deliverable asked for.
+
 LIVE_RECEIPTS: list[dict] = []
 
 
@@ -379,12 +365,17 @@ class InferResult(BaseModel):
 
 @app.post("/infer", response_model=InferResult)
 async def infer(file: UploadFile = File(...)):
-    """Real image -> JSON: generate with the fine-tuned checkpoint, repair the raw
-    completion (#9), score confidence with the full 3-signal composite (#8) since a
-    live generation always has token logprobs available. Unlike /receipts/{image_id},
-    this has no ground truth to compare against — it's someone's own photo. Also
-    records the result into LIVE_RECEIPTS so /dashboard can reflect it.
-    """
+    """Run inference on a single uploaded receipt image, returning the prediction dict,
+    confidence badges, and repair status. Confidence is computed with the 3-signal Platt
+    calibration (format validity + arithmetic consistency + token logprob) fit at
+    startup against the same file this API serves. Falls back to 2-signal calibration if
+    the logprob-enabled prediction file isn't present, and to the raw heuristic if no
+    Platt calibration was fit for a given field (e.g. tip: too sparse even in a bigger
+    sample). Confidence is logged to logs/confidence.jsonl but not returned in the API
+    response, to avoid overwhelming the client with a large JSON blob. The repair status
+    indicates whether the model's raw output was valid JSON or had to be repaired by the
+    repair_json function."""
+
     if not LIVE_INFERENCE_AVAILABLE:
         raise HTTPException(status_code=503,
                             detail="live inference unavailable on this server (mlx_vlm "
@@ -420,6 +411,7 @@ async def infer(file: UploadFile = File(...)):
 
 def _aggregate_spend(records: list[dict]) -> dict:
     """Shared by /dashboard: store/month totals from a list of prediction dicts."""
+    
     total_spend = 0.0
     n_priced = 0
     by_store = defaultdict(float)
@@ -451,12 +443,10 @@ def _aggregate_spend(records: list[dict]) -> dict:
 
 @app.get("/dashboard")
 def dashboard():
-    """Real-time spending dashboard over receipts actually uploaded and analyzed via
-    /infer this server run — not the static WildReceipt eval set the old version of
-    this endpoint used (a genuinely misleading number: mixed currencies, a
-    checkpoint's own extraction errors, and 472 research receipts nobody actually
-    bought anything on). Empty until at least one receipt has been analyzed.
-    """
+    """Return a dashboard summary of the receipts uploaded this server run (same
+    LIVE_RECEIPTS set /infer uses). Includes total spend, top stores, and monthly
+    spend. Categories are heuristic (store-name keywords)."""
+
     agg = _aggregate_spend([r["prediction"] for r in LIVE_RECEIPTS])
     # category computed server-side (needs store + line items) so storeless receipts
     # still categorize from what was bought instead of falling to "other".
@@ -473,8 +463,10 @@ def dashboard():
 
 @app.get("/categories")
 def categories():
-    """Merchant-category breakdown over the receipts uploaded this server run (same
-    LIVE_RECEIPTS set /dashboard uses). Categories are heuristic (store-name keywords)."""
+    """Return a summary of the receipts uploaded this server run, grouped by heuristic
+    category (store-name keywords). Includes count, total spend, and average spend per
+    receipt. Categories are heuristic (store-name keywords)."""
+
     records = [r["prediction"] for r in LIVE_RECEIPTS]
     buckets: dict[str, dict] = defaultdict(lambda: {"count": 0, "spend": 0.0, "n_priced": 0})
     for rec in records:

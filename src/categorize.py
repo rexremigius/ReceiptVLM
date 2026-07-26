@@ -93,6 +93,8 @@ ITEM_HINTS: list[tuple[str, list[str]]] = [
 
 
 def _match(keywords, text):
+    """Return True if any keyword matches the text, using regex for word-boundary keywords."""
+
     for kw in keywords:
         if kw.startswith(r"\b"):
             if re.search(kw, text):
@@ -103,6 +105,8 @@ def _match(keywords, text):
 
 
 def infer_category(record):
+    """Infer a receipt's category from its store name and line-item names, using heuristics."""
+
     store = (record.get("store") or "").lower()
     for category, needle in KNOWN_CHAINS:
         if needle in store:
@@ -121,6 +125,8 @@ def infer_category(record):
 
 
 def score_subset(gold, pred, ids):
+    """Score a subset of receipts, returning the micro-F1 and number of receipts scored."""
+    
     counts = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     n = 0
     for i in ids:
