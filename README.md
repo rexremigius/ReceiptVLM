@@ -126,3 +126,11 @@ logs/          per-session confidence logs (reset on each backend start)
 ## Stack
 
 Qwen2.5-VL-3B · MLX-VLM · QLoRA · FastAPI · Streamlit · Plotly · Tesseract (baseline).
+
+## Colaborators
+
+Shweta Perumal: MS DS 
+
+Rex Remigius Stephen Jothi: MS CS 
+
+Dheeraaj Pinjala: MS CS 
