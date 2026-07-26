@@ -1,3 +1,9 @@
+"""OCR + regex extraction baseline, the non-ML floor. Runs Tesseract on a receipt
+image, then applies field-specific regex (subtotal/tax/tip/total keywords,
+numeric-date patterns) plus a line-item heuristic that pairs each text line's
+trailing money match with the text before it as the item name. Outputs the same
+schema as prep.py, so eval.py can score it identically to any other predictor.
+"""
 from __future__ import annotations
 
 import argparse
@@ -61,7 +67,7 @@ def find_field(lines: list[str], keyword_re: re.Pattern) -> str | None:
 
 def find_date(lines: list[str]) -> str | None:
     """Return the first date match in the lines, or None if none."""
-    
+
     for line in lines:
         m = DATE_NUMERIC_RE.search(line) or DATE_MONTH_RE.search(line)
         if m:
@@ -114,7 +120,7 @@ def load_image_ids(split: str, limit: int | None) -> list[str]:
 
 
 def process_split(split: str, limit: int | None):
-    """Process a split (train/test) of receipts, extracting fields and line items, 
+    """Process a split (train/test) of receipts, extracting fields and line items,
     and save the results to JSONL files."""
 
     image_ids = load_image_ids(split, limit)

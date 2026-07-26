@@ -1,3 +1,10 @@
+"""Categorizes every field and line-item disagreement between predictions and ground
+truth into a failure taxonomy (missing, hallucinated, digit-transposed, numeric
+near/far miss, text partial/unrelated overlap, line-item missing/hallucinated),
+rather than just reporting a single wrong/right score. Turns eval.py's F1 numbers
+into a report of what kinds of mistakes the model actually makes.
+"""
+from __future__ import annotations
 import argparse
 import difflib
 import json
@@ -54,7 +61,7 @@ def token_overlap(a, b):
 
 def classify(field, gold_val, pred_val):
     """Return a failure category string, or None if the pair is a match."""
-    
+
     g_has, p_has = gold_val is not None, pred_val is not None
     if not g_has and not p_has:
         return None

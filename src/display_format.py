@@ -1,3 +1,8 @@
+"""Formats a predicted line-item name for display in the UI. WildReceipt's ground
+truth frequently concatenates words with no spaces, so this splits camelCase and
+ACRONYM boundaries back into words, with an opt-in letter-digit split too aggressive
+to enable by default.
+"""
 from __future__ import annotations
 
 import re
@@ -10,7 +15,7 @@ _LETTER_DIGIT = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
 
 def format_item_name(name, split_digits: bool = False) -> str:
     """Split camel-case and acronyms into words, optionally splitting letters from digits."""
-    
+
     if not isinstance(name, str) or not name:
         return name
     s = _ACRONYM_TO_WORD.sub(" ", name)

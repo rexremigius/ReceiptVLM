@@ -1,3 +1,9 @@
+"""Generates receipt-field predictions from the VLM, either zero-shot with the base
+model or fine-tuned via --adapter-path, using the identical prompt and schema so the
+two runs stay directly comparable. Also supports --capture-logprobs, which records
+per-token log-probabilities alongside each predicted field and line item, the raw
+signal confidence.py later turns into calibrated, per-field confidence scores.
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +24,7 @@ SCALAR_KEYS = [k for k in SCHEMA_KEYS if k != "line_items"]
 
 def normalize(parsed: dict | None) -> dict:
     """Normalize a parsed receipt dict to ensure all expected keys are present, and
-    that line_items is always a list (even if empty). Returns a dict with all SCALAR_KEYS 
+    that line_items is always a list (even if empty). Returns a dict with all SCALAR_KEYS
     and line_items, with None for missing fields. If parsed is None, returns all None/empty values."""
 
     if parsed is None:
@@ -138,7 +144,7 @@ def line_item_spans(text: str) -> list[tuple[int, int]]:
 def line_item_avg_logprob(idx: int, text: str, chunks: list) -> float | None:
     """Average token logprob over the characters spanning the given line-item object in
     the raw JSON text. None if the line item wasn't found (e.g. truncated generation)."""
-    
+
     spans = line_item_spans(text)
     if idx >= len(spans):
         return None
@@ -234,7 +240,7 @@ def main():
             record["_field_logprobs"] = {f: field_avg_logprob(f, raw, chunks)
                                          for f in SCALAR_KEYS}
             record["_line_item_logprobs"] = [
-                line_item_avg_logprob(i, raw, chunks) for i in range(len(record["line_items"]))
+                line_item_avg_logprob(j, raw, chunks) for j in range(len(record["line_items"]))
             ]
         records.append(record)
     print(f"{len(image_ids)}/{len(image_ids)} done in {time.time() - t_start:.0f}s "

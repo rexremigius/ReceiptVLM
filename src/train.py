@@ -1,3 +1,9 @@
+"""Fine-tunes Qwen2.5-VL-3B on WildReceipt receipts with QLoRA, using mlx_vlm's own
+trainer utilities (a 4-bit base model plus LoRA adapters, so it fits within Apple
+Silicon's unified memory). Trains on the same prompt and schema zeroshot.py evaluates
+against, checkpointing periodically and logging train/validation loss so a run's
+progress and final adapter can be inspected and promoted.
+"""
 from __future__ import annotations
 
 import argparse
@@ -41,7 +47,7 @@ def to_example(record: dict) -> dict:
     """Convert a receipt record to a training example dict with messages and images for
     mlx_vlm.trainer.Dataset. The prompt is the user message, and the JSON completion
     is the assistant message. The image is the receipt image."""
-    
+
     messages = [
         {"role": "user", "content": PROMPT},
         {"role": "assistant", "content": target_json(record)},

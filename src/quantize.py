@@ -1,4 +1,9 @@
-
+"""Compares FP16/INT8/INT4 versions of the fine-tuned model on the
+same receipt subset - accuracy (micro-F1), latency, and peak memory for each. Each
+precision tier runs in its own subprocess, since mlx's peak-memory tracking is
+process-global and would otherwise contaminate later tiers' numbers. Produces a
+summary JSON plus a comparison figure.
+"""
 from __future__ import annotations
 
 import argparse
@@ -115,7 +120,7 @@ def report(limit: int, split: str):
         ci = ev.bootstrap_micro_f1(gold, pred, n=1000)
         metas[tier]["micro_f1_ci95"] = [round(ci[0], 4), round(ci[1], 4)]
 
-    # --- console table (SKILL.md: F1 per field, not just an aggregate) -------------
+    # --- console table: per-field F1, not just one aggregate number ----------------
     print(f"\n=== quantize sweep report (n={limit} receipts, split={split}) ===\n")
     header = "field".ljust(18) + "".join(t.ljust(10) for t in TIER_ORDER)
     print(header)
@@ -151,17 +156,17 @@ def report(limit: int, split: str):
 
     fp16_meta = metas.get("FP16")
     if fp16_meta is not None and not fp16_meta["fit"]:
-        print("\nFINDING (per SKILL.md): FP16 does not fit standalone on this "
-              "hardware — INT8 is the real ceiling for on-device serving, not a "
-              "compression choice made for speed alone.")
+        print("\nFINDING: FP16 does not fit standalone on this hardware — INT8 is "
+              "the real ceiling for on-device serving, not a compression choice "
+              "made for speed alone.")
 
-    # --- required figure: precision x field, side by side, its own labeled plot ---
+    # --- precision x field figure, side by side, its own labeled plot --------------
     if f1_table:
         fig, ax = plt.subplots(figsize=(10, 5.5))
         n_tiers = len(f1_table)
         bar_w = 0.8 / max(n_tiers, 1)
         colors = {"FP16": "#2a78d6", "INT8": "#eb6834", "INT4": "#1baf7a"}  # dataviz
-        
+
         x = range(len(field_order))
         for i, t in enumerate(TIER_ORDER):
             if t not in f1_table:
@@ -182,7 +187,7 @@ def report(limit: int, split: str):
         fig.tight_layout()
         fig_path = OUT_ROOT / "_quantize_report.png"
         fig.savefig(fig_path, dpi=150)
-        print(f"\n-> {fig_path.name} (required precision x field figure)")
+        print(f"\n-> {fig_path.name}")
 
     summary_path = OUT_ROOT / "_quantize_summary.json"
     summary_path.write_text(json.dumps(

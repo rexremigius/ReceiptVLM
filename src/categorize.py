@@ -1,3 +1,9 @@
+"""Buckets each receipt into a spend category (dining/grocery/fuel/retail/transport/
+misc/other) for the dashboard's spend-by-category view. Checks the store name against
+a curated list of known chains first (settles ambiguous cases, like a Costco selling
+food being grocery not dining), then falls back to substring keyword rules, then
+line-item keywords, defaulting to 'other' when nothing matches.
+"""
 from __future__ import annotations
 
 import argparse
@@ -126,7 +132,7 @@ def infer_category(record):
 
 def score_subset(gold, pred, ids):
     """Score a subset of receipts, returning the micro-F1 and number of receipts scored."""
-    
+
     counts = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     n = 0
     for i in ids:

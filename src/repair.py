@@ -1,3 +1,10 @@
+"""Repairs the model's raw text output when it doesn't parse as valid JSON. Strips a
+markdown code fence around the payload, removes a trailing comma before a closing
+brace, converts Python literal syntax (single quotes, None instead of null) into
+proper JSON, and closes truncated output cut off mid-structure — tries each fix in
+order and returns the first version that actually parses, or None with a
+"hard_failure" status if none of them do.
+"""
 from __future__ import annotations
 
 import ast
@@ -26,7 +33,7 @@ def _outer_braces(text: str) -> str | None:
 
 def _fix_trailing_commas(text: str) -> str:
     """Remove trailing commas before closing braces/brackets, which are invalid in JSON."""
-    
+
     return TRAILING_COMMA_RE.sub(r"\1", text)
 
 
@@ -34,7 +41,6 @@ def _fix_python_literal(text: str) -> dict | None:
     """Attempt to parse a Python literal dict (single quotes, None, etc.) and return it as a dict.
     Returns None if the text is not a valid Python literal dict.
     """
-
     try:
         val = ast.literal_eval(text)
     except (ValueError, SyntaxError):
@@ -46,7 +52,6 @@ def _close_truncated(text: str) -> str:
     """Attempt to close a truncated JSON string by adding closing braces/brackets. Returns the
     closed string, which may still be invalid JSON if the truncation was mid-string or mid-structure.
     """
-
     stack: list[str] = []
     in_string = False
     escape = False
@@ -106,7 +111,6 @@ def repair_json(raw: str) -> tuple[dict | None, str]:
     - "repaired_truncation": valid JSON after closing truncated structure
     - "hard_failure": could not parse as JSON
     """
-
     candidate = _outer_braces(_strip_fence(raw))
     if candidate is None:
         return None, "hard_failure"

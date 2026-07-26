@@ -1,3 +1,8 @@
+"""Converts WildReceipt's raw OCR box + KIE-label annotations into this project's
+schema. Maps 8 of 25 label categories onto scalar fields or line items, dropping and
+logging the rest. Boxes are sorted top-to-bottom then left-to-right before grouping
+into line items, since WildReceipt's box order doesn't match reading order.
+"""
 from __future__ import annotations
 
 import argparse
@@ -61,7 +66,6 @@ def _fix_decimal_separator(num_text: str) -> str:
     separator. If there's a single comma and two digits after it, treat it as a decimal
     separator; otherwise, strip all commas. Returns the cleaned string.
     """
-
     if "." in num_text:
         return num_text.replace(",", "")
     if num_text.count(",") == 1:
@@ -75,7 +79,6 @@ def clean_money(text: str) -> str | None:
     """Return a cleaned money string, or None if none found. Strips $, commas, letters,
     and fixes decimal separators. Returns the last money match in the text.
     """
-
     for token in text.split():
         m = _MONEY_TOKEN_RE.search(token)
         if m:
@@ -85,7 +88,7 @@ def clean_money(text: str) -> str | None:
 
 def _median(xs: list[float]) -> float:
     """Return the median of a list of numbers, or 0.0 if empty."""
-    
+
     s = sorted(xs)
     return s[len(s) // 2] if s else 0.0
 
@@ -94,7 +97,6 @@ def build_line_items(anns: list[dict]) -> list[dict]:
     """Return a list of line items, each being a dict with keys "name" and "price", by
     matching item-name boxes to the nearest price box on the same horizontal band.
     """
-
     items, prices, heights = [], [], []
     for a in anns:
         if a["label"] not in (ITEM_LABEL, PRICE_LABEL):
@@ -140,7 +142,6 @@ def build_record(receipt: dict, class_names: dict[int, str],
     """Build a receipt record from a WildReceipt JSON object, using the class names to
     map label IDs to schema fields. Returns a dict with keys SCHEMA_KEYS + "line_items".
     """
-
     anns = receipt["annotations"]
 
     # Collect scalar-field boxes; a field can span multiple boxes (e.g. "$" + number).
@@ -179,7 +180,6 @@ def process_split(split: str, class_names: dict[int, str], limit: int | None):
     and saving them to JSONL files. Returns the list of records, a summary dict, and the
     paths of the output files.
     """
-
     src = DATA_ROOT / f"{split}.txt"
     records, dropped = [], Counter()
     with src.open() as f:

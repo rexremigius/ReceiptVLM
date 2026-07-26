@@ -1,3 +1,9 @@
+"""Runs the FastAPI layer behind the live demo. /receipts/{id} returns cached
+WildReceipt predictions with 2-signal confidence, /infer runs a freshly uploaded
+photo through the fine-tuned model, the repair layer, and the full 3-signal
+confidence score (token logprob added), and /dashboard aggregates spend only from
+receipts actually uploaded this run, not the static evaluation set.
+"""
 from __future__ import annotations
 
 import datetime
@@ -160,12 +166,12 @@ def _na_badge() -> dict:
 def _unscored_badge() -> dict:
     """Return a badge for a field that is present but has no confidence score, meaning the
     model didn't have enough signal to make a judgment (e.g. a line-item with no price)."""
-    
+
     return {"score": None, "level": "unscored"}
 
 
 def _missing_badge() -> dict:
-    """Return a badge for a field that is missing (e.g. a null store on a receipt 
+    """Return a badge for a field that is missing (e.g. a null store on a receipt
     that has no store)."""
 
     return {"score": None, "level": "missing"}
@@ -174,7 +180,7 @@ def _missing_badge() -> dict:
 def _null_field_badge(field: str) -> dict:
     """Return a badge for a null field, either "missing" (red) if it's a field that should
     always be present, or "na" (neutral) if it's a field that is often legitimately null."""
-    
+
     return _missing_badge() if field in FIELDS_WHERE_NULL_IS_LIKELY_A_MISS else _na_badge()
 
 
@@ -297,7 +303,7 @@ class ReceiptDetail(BaseModel):
     repair_status: str
 
 
-app = FastAPI(title="Receipt-to-JSON API", version="0.1.0-stopgap")
+app = FastAPI(title="Receipt-to-JSON API", version="1.0.0")
 
 
 @app.get("/health")
@@ -327,6 +333,7 @@ def get_receipt_image(image_id: str):
         raise HTTPException(status_code=404, detail=f"no image at {image_id}")
     return FileResponse(path)
 
+
 @app.get("/receipts/{image_id:path}", response_model=ReceiptDetail)
 def get_receipt(image_id: str, include_gt: bool = False):
     rec = PREDICTIONS.get(image_id)
@@ -339,7 +346,8 @@ def get_receipt(image_id: str, include_gt: bool = False):
         prediction={k: rec.get(k) for k in SCALAR_FIELDS + ["line_items"]},
         confidence=confidence,
         ground_truth=GROUND_TRUTH.get(image_id) if include_gt else None,
-        
+        # repair.py already ran on this record when it was generated; there's no raw
+        # completion left here for this endpoint to repair.
         repair_status="handled_upstream_at_generation",
     )
 
@@ -411,7 +419,7 @@ async def infer(file: UploadFile = File(...)):
 
 def _aggregate_spend(records: list[dict]) -> dict:
     """Shared by /dashboard: store/month totals from a list of prediction dicts."""
-    
+
     total_spend = 0.0
     n_priced = 0
     by_store = defaultdict(float)
@@ -476,7 +484,7 @@ def categories():
         if total is not None:
             b["spend"] += total
             b["n_priced"] += 1
-    order = ["dining", "grocery", "fuel", "retail", "other"]
+    order = ["dining", "grocery", "fuel", "retail", "transport", "misc", "other"]
     out = []
     for cat in [c for c in order if c in buckets] + [c for c in buckets if c not in order]:
         b = buckets[cat]

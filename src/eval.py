@@ -1,9 +1,14 @@
+"""The shared per-field evaluation harness every other script scores
+against. Computes micro-F1 across the six scalar fields plus line items (matched by
+name-similarity alignment, not position), a bootstrap confidence interval, and a
+paired significance test between two prediction files.
+"""
+from __future__ import annotations
 import argparse
 import difflib
 import json
 import random
 import re
-import sys
 from collections import defaultdict
 
 # schema contract: matches prep.py's actual output (see prep.py SCALAR_MAP)
@@ -95,7 +100,6 @@ def align_line_items(gold_items, pred_items):
     didn't match anything. Each gold item is aligned to at most one pred item, and vice
     versa, with a minimum similarity threshold for alignment.
     """
-
     pairs = []
     used = set()
     gold_leftover, pred_leftover = [], list(range(len(pred_items)))
@@ -165,7 +169,7 @@ def prf(c):
 
 def evaluate(gold_by_id, pred_by_id):
     """Return per-field PRF + micro PRF over the intersection of ids."""
-    
+
     counts = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     ids = [i for i in gold_by_id if i in pred_by_id]
     for i in ids:
@@ -218,7 +222,6 @@ def paired_bootstrap_test(gold_by_id, pred_a_by_id, pred_b_by_id, n=1000, seed=0
     and "p_approx" (two-sided p-value approximation), or None if there are no receipts
     in common between the two prediction sets and the gold set.
     """
-    
     rng = random.Random(seed)
     ids = [i for i in gold_by_id if i in pred_a_by_id and i in pred_b_by_id]
     if not ids:
@@ -280,7 +283,7 @@ def print_report(name, per_field, micro, n, ci):
 
 
 def run(gold_path, pred_paths, boot=1000):
-    """Run evaluation of one or more prediction files against a gold file, printing per-field and 
+    """Run evaluation of one or more prediction files against a gold file, printing per-field and
     micro-F1 scores, plus bootstrap CIs and paired significance tests."""
     gold = load(gold_path)
     results = {}

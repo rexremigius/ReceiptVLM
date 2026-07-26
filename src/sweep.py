@@ -1,3 +1,9 @@
+"""Trains short trial runs over a grid of rank/alpha/learning-rate combinations on a
+small data subset (250 receipts, 1 epoch each), caching completed trials so re-runs
+skip finished configs. Picks the combination with the best validation loss, then
+confirms that winning config with a full run before it gets promoted to the
+production checkpoint.
+"""
 from __future__ import annotations
 
 import json
@@ -21,7 +27,7 @@ LR_GRID = [5e-5, 1e-4, 2e-4]
 
 def run_name(rank: float, alpha: float, lr: float) -> str:
     """Return a unique name for a hyperparameter config, e.g. r8_a1.0_lr0.0001."""
-    
+
     return f"r{rank}_a{alpha}_lr{lr:g}"
 
 

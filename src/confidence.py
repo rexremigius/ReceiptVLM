@@ -1,3 +1,9 @@
+"""Calibrated per-field and per-line-item confidence. Combines format
+validity, arithmetic consistency (do subtotal+tax+tip match total?), and token logprob
+into a raw score, then fits Platt-scaling logistic regression against real outcomes to
+turn it into a true probability. Also reports ECE, reliability diagrams, and
+risk-coverage curves so the calibration's quality is verifiable, not just claimed.
+"""
 from __future__ import annotations
 
 import argparse
@@ -56,7 +62,6 @@ def logprob_feature(field: str, pred: dict) -> float | None:
     prediction file wasn't generated with `--capture-logprobs` or the key text span
     wasn't found.
     """
-
     lp = (pred.get("_field_logprobs") or {}).get(field)
     return float(np.exp(lp)) if lp is not None else None
 
@@ -70,7 +75,7 @@ _PRICE_LEAK_RE = re.compile(r"\$\d")
 def format_valid_line_item_name(name) -> bool:
     """Whether a line-item name is non-empty, not just a single quote or digit, and
     doesn't contain a quoted digit or a leaked price (e.g. "2x $3.99")."""
-    
+
     if name is None:
         return False
     s = str(name)
@@ -99,7 +104,6 @@ def line_item_consistency(items: list[dict], subtotal, total=None, tax=None,
     present to check (e.g. subtotal never extracted at all). Returns a dict keyed by
     line-item index, with values being True/False/None for each item with a price.
     """
-
     target = ev.normalize_num(subtotal) if subtotal is not None else None
     if target is None:
         implied_total = ev.normalize_num(total) if total is not None else None
@@ -156,7 +160,7 @@ def fit_platt(X: np.ndarray, outcomes: np.ndarray) -> np.ndarray:
     values. Returns a 1D array of length n_features+1: the first n_features are the
     learned weights, the last is the learned bias term. The caller can then compute
     calibrated probabilities for new data using `apply_platt`."""
-    
+
     X = np.atleast_2d(X)
     n_features = X.shape[1]
 

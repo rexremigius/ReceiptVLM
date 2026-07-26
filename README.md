@@ -110,6 +110,7 @@ quantize.py    FP16/INT8/INT4 sweep (F1 + latency + peak memory)
 confidence.py  calibrated per-field confidence + risk-coverage
 repair.py      JSON repair layer for malformed model output
 categorize.py  heuristic merchant-type buckets (grocery / dining / fuel / …)
+display_format.py  splits concatenated line-item names for display (e.g. "GrossesWasser" -> "Grosses Wasser")
 serve.py       FastAPI serving layer (+ app/streamlit_app.py front end)
 ```
 
@@ -127,10 +128,10 @@ logs/          per-session confidence logs (reset on each backend start)
 
 Qwen2.5-VL-3B · MLX-VLM · QLoRA · FastAPI · Streamlit · Plotly · Tesseract (baseline).
 
-## Colaborators
+## Collaborators
 
-Shweta Perumal: MS DS 
+Shweta Perumal: MS DS
 
-Rex Remigius Stephen Jothi: MS CS 
+Rex Remigius Stephen Jothi: MS CS
 
-Dheeraaj Pinjala: MS CS 
+Dheeraaj Pinjala: MS CS
