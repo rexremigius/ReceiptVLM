@@ -11,10 +11,21 @@ import json
 import time
 from pathlib import Path
 
-from mlx_vlm import generate, load, stream_generate
-from mlx_vlm.prompt_utils import apply_chat_template
+# mlx is Apple-Silicon-only, but everything in this module except generate_with_logprobs
+# and main() is plain Python -- the field/line-item span walkers that turn a completion
+# into per-field logprobs are reused by serve.py and by the CUDA backend behind the hosted
+# Space. Importing mlx_vlm unconditionally made those unreachable off Apple Silicon, which
+# also left serve.py's own `except ImportError` fallback dead: it never ran, because this
+# import raised first.
+try:
+    from mlx_vlm import generate, load, stream_generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+    MLX_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the host platform
+    generate = load = stream_generate = apply_chat_template = None
+    MLX_AVAILABLE = False
 
-from train import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # reuse train.py's exact prompt/schema
+from schema import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # the exact prompt/schema train.py used
 from repair import repair_json  # #9 — extraction + trailing-comma/literal/truncation fixups
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "wildreceipt"
@@ -43,6 +54,12 @@ def generate_with_logprobs(model, processor, prompt, image, **kwargs) -> tuple[s
     JSON. See field_avg_logprob() and line_item_avg_logprob() for examples of how to use
     the logprobs to compute confidence scores for specific fields or line items."""
 
+    if not MLX_AVAILABLE:
+        raise RuntimeError(
+            "generate_with_logprobs needs mlx_vlm, which is Apple-Silicon-only. On other "
+            "platforms use src.backend_hf.ReceiptModel.generate_with_logprobs, which "
+            "returns the same (text, chunks) shape from transformers."
+        )
     import numpy as np
     chunks = []
     for response in stream_generate(model, processor, prompt, image=image, **kwargs):

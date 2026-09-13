@@ -29,11 +29,8 @@ DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "wildreceipt"
 PROC_ROOT = Path(__file__).resolve().parent.parent / "data" / "processed"
 CKPT_ROOT = Path(__file__).resolve().parent.parent / "checkpoints"
 
-SCHEMA_KEYS = ["store", "date", "tax", "tip", "subtotal", "total", "line_items"]
-DEFAULT_MODEL = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
-PROMPT = ("Extract the receipt fields as JSON with keys store, date, tax, tip, "
-          "subtotal, total, line_items (each {name, price}). Use null for missing "
-          "scalar fields and [] for no line items.")
+# Moved to schema.py so serving backends can read the prompt without importing mlx.
+from schema import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # noqa: E402
 
 
 def target_json(record: dict) -> str:

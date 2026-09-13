@@ -15,7 +15,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from train import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS
+from schema import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS
 from repair import repair_json
 from zeroshot import normalize, load_image_ids
 import eval as ev
