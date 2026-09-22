@@ -4,6 +4,7 @@ Silicon's unified memory). Trains on the same prompt and schema zeroshot.py eval
 against, checkpointing periodically and logging train/validation loss so a run's
 progress and final adapter can be inspected and promoted.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,11 +30,8 @@ DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "wildreceipt"
 PROC_ROOT = Path(__file__).resolve().parent.parent / "data" / "processed"
 CKPT_ROOT = Path(__file__).resolve().parent.parent / "checkpoints"
 
-SCHEMA_KEYS = ["store", "date", "tax", "tip", "subtotal", "total", "line_items"]
-DEFAULT_MODEL = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
-PROMPT = ("Extract the receipt fields as JSON with keys store, date, tax, tip, "
-          "subtotal, total, line_items (each {name, price}). Use null for missing "
-          "scalar fields and [] for no line items.")
+# Moved to schema.py so serving backends can read the prompt without importing mlx.
+from schema import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # noqa: E402
 
 
 def target_json(record: dict) -> str:
@@ -55,11 +53,15 @@ def to_example(record: dict) -> dict:
     return {"messages": messages, "images": [str(DATA_ROOT / record["image_id"])]}
 
 
-def load_split(limit: int | None, val_frac: float, seed: int) -> tuple[list[dict], list[dict]]:
+def load_split(
+    limit: int | None, val_frac: float, seed: int
+) -> tuple[list[dict], list[dict]]:
     """Load the train split of receipts, optionally limiting the number of records and
     reserving a fraction for validation. Returns (train_records, val_records)."""
 
-    records = [json.loads(line) for line in (PROC_ROOT / "train.jsonl").open() if line.strip()]
+    records = [
+        json.loads(line) for line in (PROC_ROOT / "train.jsonl").open() if line.strip()
+    ]
     rng = random.Random(seed)
     rng.shuffle(records)
     if limit:
@@ -69,7 +71,9 @@ def load_split(limit: int | None, val_frac: float, seed: int) -> tuple[list[dict
     return train, val
 
 
-def build_dataset(records, processor, config, image_processor, image_resize_shape) -> Dataset:
+def build_dataset(
+    records, processor, config, image_processor, image_resize_shape
+) -> Dataset:
     """Build a mlx_vlm.trainer.Dataset from receipt records, applying the chat template
     to the prompt + JSON completion. Returns a Dataset with input_ids, attention_mask,
     pixel_values, and labels for training."""
@@ -78,13 +82,21 @@ def build_dataset(records, processor, config, image_processor, image_resize_shap
 
     def process_data(ex):
         ex["messages"] = apply_chat_template(
-            config=config, processor=processor, prompt=ex["messages"], return_messages=True
+            config=config,
+            processor=processor,
+            prompt=ex["messages"],
+            return_messages=True,
         )
         return ex
 
     hf_ds = hf_ds.map(process_data)
-    return Dataset(hf_ds, config, processor, image_processor=image_processor,
-                    image_resize_shape=image_resize_shape)
+    return Dataset(
+        hf_ds,
+        config,
+        processor,
+        image_processor=image_processor,
+        image_resize_shape=image_resize_shape,
+    )
 
 
 def resolve_assistant_id(processor, dataset: Dataset) -> int:
@@ -115,17 +127,23 @@ def guarded_train_step(trainer: Trainer, batch) -> tuple[float, bool]:
     mx.eval(loss)
     bad = bool(mx.isnan(loss).item() or mx.isinf(loss).item())
     if not bad:
-        bad = any(bool(mx.any(mx.isnan(g) | mx.isinf(g)).item())
-                   for _, g in tree_flatten(grads))
+        bad = any(
+            bool(mx.any(mx.isnan(g) | mx.isinf(g)).item())
+            for _, g in tree_flatten(grads)
+        )
     if bad:
         return loss, False
     if trainer.clip_gradients is not None:
-        grads = tree_map(lambda g: mx.clip(g, -trainer.clip_gradients, trainer.clip_gradients), grads)
+        grads = tree_map(
+            lambda g: mx.clip(g, -trainer.clip_gradients, trainer.clip_gradients), grads
+        )
     trainer.optimizer.update(trainer.model, grads)
     return loss, True
 
 
-def val_loss(trainer: Trainer, dataset: Dataset, max_batches: int | None = None) -> float:
+def val_loss(
+    trainer: Trainer, dataset: Dataset, max_batches: int | None = None
+) -> float:
     """Compute the average loss on a validation dataset, optionally limiting the number of
     batches. Returns NaN if the dataset is empty or all losses are NaN/Inf."""
 
@@ -155,12 +173,20 @@ def save_checkpoint(model, step: int, keep_last: int, ckpt_root: Path) -> Path:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--limit", type=int, default=None,
-                     help="cap training receipts (tiny-subset validation run)")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="cap training receipts (tiny-subset validation run)",
+    )
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--epochs", type=int, default=1)
-    ap.add_argument("--iters", type=int, default=None,
-                     help="total optimizer steps; default len(train) * epochs")
+    ap.add_argument(
+        "--iters",
+        type=int,
+        default=None,
+        help="total optimizer steps; default len(train) * epochs",
+    )
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--lora-rank", type=int, default=8)
     ap.add_argument("--lora-alpha", type=float, default=1.0)
@@ -171,34 +197,54 @@ def main():
     ap.add_argument("--print-every", type=int, default=5)
     ap.add_argument("--keep-last", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--ckpt-root", default=str(CKPT_ROOT),
-                     help="where to write checkpoints; override for sweep trials so they "
-                          "don't clobber the production checkpoints/final")
+    ap.add_argument(
+        "--ckpt-root",
+        default=str(CKPT_ROOT),
+        help="where to write checkpoints; override for sweep trials so they "
+        "don't clobber the production checkpoints/final",
+    )
     args = ap.parse_args()
     ckpt_root = Path(args.ckpt_root)
 
     train_records, val_records = load_split(args.limit, args.val_frac, args.seed)
-    print(f"train={len(train_records)} val={len(val_records)} receipts, model={args.model}")
+    print(
+        f"train={len(train_records)} val={len(val_records)} receipts, model={args.model}"
+    )
 
     model, processor = load(args.model, processor_config={"trust_remote_code": True})
     config = model.config.__dict__
     # mlx_vlm's trainer.Dataset expects "image_token_index"; Qwen2.5-VL's own config
-    # names it "image_token_id" — alias so both names resolve.
+    # names it "image_token_id" - alias so both names resolve.
     config.setdefault("image_token_index", config.get("image_token_id"))
     image_processor = load_image_processor(args.model)
     resize_shape = tuple(args.image_resize)
 
-    train_ds = build_dataset(train_records, processor, config, image_processor, resize_shape)
-    val_ds = (build_dataset(val_records, processor, config, image_processor, resize_shape)
-              if val_records else None)
+    train_ds = build_dataset(
+        train_records, processor, config, image_processor, resize_shape
+    )
+    val_ds = (
+        build_dataset(val_records, processor, config, image_processor, resize_shape)
+        if val_records
+        else None
+    )
 
     linear_names = find_all_linear_names(model.language_model)
-    model = get_peft_model(model, linear_names, rank=args.lora_rank,
-                            alpha=args.lora_alpha, dropout=args.lora_dropout)
+    model = get_peft_model(
+        model,
+        linear_names,
+        rank=args.lora_rank,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout,
+    )
     optimizer = optim.Adam(learning_rate=args.lr)
     assistant_id = resolve_assistant_id(processor, train_ds)
-    trainer = Trainer(model, optimizer, train_on_completions=True,
-                       assistant_id=assistant_id, clip_gradients=1.0)
+    trainer = Trainer(
+        model,
+        optimizer,
+        train_on_completions=True,
+        assistant_id=assistant_id,
+        clip_gradients=1.0,
+    )
     model.train()
 
     total_steps = args.iters or len(train_ds) * args.epochs
@@ -218,14 +264,23 @@ def main():
         entry = {"step": step, "loss": loss_val, "applied": applied}
         if not applied:
             skipped_steps += 1
-            print(f"step {step}/{total_steps} SKIPPED (NaN/Inf loss or grad, "
-                  f"record={train_records[order[pos]]['image_id']})")
+            print(
+                f"step {step}/{total_steps} SKIPPED (NaN/Inf loss or grad, "
+                f"record={train_records[order[pos]]['image_id']})"
+            )
 
         if step % args.print_every == 0:
-            print(f"step {step}/{total_steps} loss {loss_val:.4f} ({time.time() - t_start:.1f}s)"
-                  + (f"  [{skipped_steps} skipped so far]" if skipped_steps else ""))
+            print(
+                f"step {step}/{total_steps} loss {loss_val:.4f} ({time.time() - t_start:.1f}s)"
+                + (f"  [{skipped_steps} skipped so far]" if skipped_steps else "")
+            )
 
-        if val_ds is not None and args.eval_every and step > 0 and step % args.eval_every == 0:
+        if (
+            val_ds is not None
+            and args.eval_every
+            and step > 0
+            and step % args.eval_every == 0
+        ):
             v = val_loss(trainer, val_ds)
             entry["val_loss"] = v
             print(f"  val_loss {v:.4f}")

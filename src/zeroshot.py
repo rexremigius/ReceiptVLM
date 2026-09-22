@@ -4,6 +4,7 @@ two runs stay directly comparable. Also supports --capture-logprobs, which recor
 per-token log-probabilities alongside each predicted field and line item, the raw
 signal confidence.py later turns into calibrated, per-field confidence scores.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -11,11 +12,29 @@ import json
 import time
 from pathlib import Path
 
-from mlx_vlm import generate, load, stream_generate
-from mlx_vlm.prompt_utils import apply_chat_template
+# mlx is Apple-Silicon-only, but everything in this module except generate_with_logprobs
+# and main() is plain Python - the field/line-item span walkers that turn a completion
+# into per-field logprobs are reused by serve.py and by the CUDA backend behind the hosted
+# Space. Importing mlx_vlm unconditionally made those unreachable off Apple Silicon, which
+# also left serve.py's own `except ImportError` fallback dead: it never ran, because this
+# import raised first.
+try:
+    from mlx_vlm import generate, load, stream_generate
+    from mlx_vlm.prompt_utils import apply_chat_template
 
-from train import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS  # reuse train.py's exact prompt/schema
-from repair import repair_json  # #9 — extraction + trailing-comma/literal/truncation fixups
+    MLX_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the host platform
+    generate = load = stream_generate = apply_chat_template = None
+    MLX_AVAILABLE = False
+
+from schema import (
+    DEFAULT_MODEL,
+    PROMPT,
+    SCHEMA_KEYS,
+)  # the exact prompt/schema train.py used
+from repair import (
+    repair_json,
+)  # #9 - extraction + trailing-comma/literal/truncation fixups
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "wildreceipt"
 OUT_ROOT = Path(__file__).resolve().parent.parent / "data" / "processed"
@@ -25,7 +44,8 @@ SCALAR_KEYS = [k for k in SCHEMA_KEYS if k != "line_items"]
 def normalize(parsed: dict | None) -> dict:
     """Normalize a parsed receipt dict to ensure all expected keys are present, and
     that line_items is always a list (even if empty). Returns a dict with all SCALAR_KEYS
-    and line_items, with None for missing fields. If parsed is None, returns all None/empty values."""
+    and line_items, with None for missing fields. If parsed is None, returns all None/empty values.
+    """
 
     if parsed is None:
         return {k: None for k in SCALAR_KEYS} | {"line_items": []}
@@ -35,7 +55,9 @@ def normalize(parsed: dict | None) -> dict:
     return record
 
 
-def generate_with_logprobs(model, processor, prompt, image, **kwargs) -> tuple[str, list]:
+def generate_with_logprobs(
+    model, processor, prompt, image, **kwargs
+) -> tuple[str, list]:
     """Generate a receipt JSON string from an image, returning the raw text and a list of
     (chunk_text, token_logprob) tuples for each streamed chunk. The logprobs
     correspond to the model's per-token log probability for each token in the chunk, and
@@ -43,12 +65,19 @@ def generate_with_logprobs(model, processor, prompt, image, **kwargs) -> tuple[s
     JSON. See field_avg_logprob() and line_item_avg_logprob() for examples of how to use
     the logprobs to compute confidence scores for specific fields or line items."""
 
+    if not MLX_AVAILABLE:
+        raise RuntimeError(
+            "generate_with_logprobs needs mlx_vlm, which is Apple-Silicon-only. On other "
+            "platforms use src.backend_hf.ReceiptModel.generate_with_logprobs, which "
+            "returns the same (text, chunks) shape from transformers."
+        )
     import numpy as np
+
     chunks = []
     for response in stream_generate(model, processor, prompt, image=image, **kwargs):
         # mx.array shapes/dtypes for `token`/`logprobs` are an internal mlx_vlm detail
         # (int vs 0-d array, (vocab,) vs (1,vocab)) that shifted across versions in
-        # practice — flattening through numpy sidesteps guessing the exact shape.
+        # practice - flattening through numpy sidesteps guessing the exact shape.
         vocab_logprobs = np.asarray(response.logprobs).reshape(-1)
         token_id = int(np.asarray(response.token).reshape(-1)[0])
         chunks.append((response.text, float(vocab_logprobs[token_id])))
@@ -143,7 +172,8 @@ def line_item_spans(text: str) -> list[tuple[int, int]]:
 
 def line_item_avg_logprob(idx: int, text: str, chunks: list) -> float | None:
     """Average token logprob over the characters spanning the given line-item object in
-    the raw JSON text. None if the line item wasn't found (e.g. truncated generation)."""
+    the raw JSON text. None if the line item wasn't found (e.g. truncated generation).
+    """
 
     spans = line_item_spans(text)
     if idx >= len(spans):
@@ -174,77 +204,112 @@ def main():
     ap.add_argument("--split", choices=["train", "test"], default="test")
     ap.add_argument("--limit", type=int, default=None, help="cap receipts processed")
     ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--adapter-path", default=None,
-                     help="path to a trained LoRA adapter dir (e.g. checkpoints/final); "
-                          "omit for the zero-shot base model")
-    ap.add_argument("--tag", default=None,
-                     help="output file tag; defaults to 'finetuned' if --adapter-path is "
-                          "set, else 'zeroshot'")
+    ap.add_argument(
+        "--adapter-path",
+        default=None,
+        help="path to a trained LoRA adapter dir (e.g. checkpoints/final); "
+        "omit for the zero-shot base model",
+    )
+    ap.add_argument(
+        "--tag",
+        default=None,
+        help="output file tag; defaults to 'finetuned' if --adapter-path is "
+        "set, else 'zeroshot'",
+    )
     # 512 truncated mid-JSON on receipts with many line items (p99 is 21 items, max is 50;
     # 50 items alone need ~500-600 tokens before scalar fields/JSON structure even start).
     # 1536 covers the observed max with headroom.
     ap.add_argument("--max-tokens", type=int, default=1536)
     # NB: tried repetition_penalty=1.3 to fight a repeat-loop degeneration on illegible
-    # long receipts — it wrecked accuracy across the board (micro-F1 0.525 -> 0.069, parse
+    # long receipts - it wrecked accuracy across the board (micro-F1 0.525 -> 0.069, parse
     # failures 10 -> 236/472) because JSON syntax is *inherently* repetitive (every line
     # item repeats `{"name":`/`"price":`/`},{`, every receipt repeats the same field-name
-    # keys) — penalizing repeated tokens fights the correct structure, not just the
+    # keys) - penalizing repeated tokens fights the correct structure, not just the
     # pathological content loop. Do not re-enable for this task without a much lower
     # value and a smaller context window tested on a subset first.
     ap.add_argument("--repetition-penalty", type=float, default=None)
     ap.add_argument("--repetition-context-size", type=int, default=20)
-    # must match train.py's default — the production checkpoint was trained at 768x1024
+    # must match train.py's default - the production checkpoint was trained at 768x1024
     ap.add_argument("--image-resize", type=int, nargs=2, default=[768, 1024])
-    ap.add_argument("--capture-logprobs", action="store_true",
-                    help="record per-field average token logprob (#8's 3rd confidence "
-                         "signal) alongside each prediction; off by default since it "
-                         "changes nothing about the prediction itself, only adds "
-                         "bookkeeping most callers (#5/#6) don't need")
+    ap.add_argument(
+        "--capture-logprobs",
+        action="store_true",
+        help="record per-field average token logprob (#8's 3rd confidence "
+        "signal) alongside each prediction; off by default since it "
+        "changes nothing about the prediction itself, only adds "
+        "bookkeeping most callers (#5/#6) don't need",
+    )
     args = ap.parse_args()
     tag = args.tag or ("finetuned" if args.adapter_path else "zeroshot")
 
     image_ids = load_image_ids(args.split, args.limit)
-    print(f"loading {args.model}" + (f" + adapter {args.adapter_path}" if args.adapter_path else ""))
-    model, processor = load(args.model, adapter_path=args.adapter_path,
-                             processor_config={"trust_remote_code": True})
+    print(
+        f"loading {args.model}"
+        + (f" + adapter {args.adapter_path}" if args.adapter_path else "")
+    )
+    model, processor = load(
+        args.model,
+        adapter_path=args.adapter_path,
+        processor_config={"trust_remote_code": True},
+    )
     config = model.config.__dict__
     prompt = apply_chat_template(processor, config, PROMPT, num_images=1)
     resize_shape = tuple(args.image_resize)
 
     records, parse_failures = [], 0
-    repair_counts = {"clean": 0, "repaired_trailing_comma": 0,
-                      "repaired_python_literal": 0, "repaired_truncation": 0,
-                      "hard_failure": 0}
+    repair_counts = {
+        "clean": 0,
+        "repaired_trailing_comma": 0,
+        "repaired_python_literal": 0,
+        "repaired_truncation": 0,
+        "hard_failure": 0,
+    }
     t_start = time.time()
     for i, image_id in enumerate(image_ids):
         gen_kwargs = dict(
-            max_tokens=args.max_tokens, temperature=0.0, resize_shape=resize_shape,
+            max_tokens=args.max_tokens,
+            temperature=0.0,
+            resize_shape=resize_shape,
             repetition_penalty=args.repetition_penalty,
             repetition_context_size=args.repetition_context_size,
         )
         t_receipt = time.time()
         if args.capture_logprobs:
             raw, chunks = generate_with_logprobs(
-                model, processor, prompt, image=str(DATA_ROOT / image_id), **gen_kwargs)
+                model, processor, prompt, image=str(DATA_ROOT / image_id), **gen_kwargs
+            )
         else:
-            raw = generate(model, processor, prompt, image=str(DATA_ROOT / image_id),
-                           verbose=False, **gen_kwargs)
-        print(f"  [{i + 1}/{len(image_ids)}] {time.time() - t_receipt:.1f}s  "
-              f"({len(raw)} chars raw)  {image_id}", flush=True)
+            raw = generate(
+                model,
+                processor,
+                prompt,
+                image=str(DATA_ROOT / image_id),
+                verbose=False,
+                **gen_kwargs,
+            )
+        print(
+            f"  [{i + 1}/{len(image_ids)}] {time.time() - t_receipt:.1f}s  "
+            f"({len(raw)} chars raw)  {image_id}",
+            flush=True,
+        )
         parsed, status = repair_json(raw)
         repair_counts[status] += 1
         if parsed is None:
             parse_failures += 1
         record = {"image_id": image_id, **normalize(parsed)}
         if args.capture_logprobs:
-            record["_field_logprobs"] = {f: field_avg_logprob(f, raw, chunks)
-                                         for f in SCALAR_KEYS}
+            record["_field_logprobs"] = {
+                f: field_avg_logprob(f, raw, chunks) for f in SCALAR_KEYS
+            }
             record["_line_item_logprobs"] = [
-                line_item_avg_logprob(j, raw, chunks) for j in range(len(record["line_items"]))
+                line_item_avg_logprob(j, raw, chunks)
+                for j in range(len(record["line_items"]))
             ]
         records.append(record)
-    print(f"{len(image_ids)}/{len(image_ids)} done in {time.time() - t_start:.0f}s "
-          f"({parse_failures} parse failures)")
+    print(
+        f"{len(image_ids)}/{len(image_ids)} done in {time.time() - t_start:.0f}s "
+        f"({parse_failures} parse failures)"
+    )
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     suffix = f".subset{args.limit}" if args.limit else ""

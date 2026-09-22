@@ -3,6 +3,7 @@ schema. Maps 8 of 25 label categories onto scalar fields or line items, dropping
 logging the rest. Boxes are sorted top-to-bottom then left-to-right before grouping
 into line items, since WildReceipt's box order doesn't match reading order.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,17 +18,24 @@ OUT_ROOT = Path(__file__).resolve().parent.parent / "data" / "processed"
 # WildReceipt label-id -> our scalar schema field. Only *_value categories that
 # correspond to a schema field appear here; everything else is dropped + logged.
 SCALAR_MAP = {
-    1: "store",     # Store_name_value
-    7: "date",      # Date_value
-    17: "subtotal", # Subtotal_value
-    19: "tax",      # Tax_value
-    21: "tip",      # Tips_value  (sparse in data)
-    23: "total",    # Total_value
+    1: "store",  # Store_name_value
+    7: "date",  # Date_value
+    17: "subtotal",  # Subtotal_value
+    19: "tax",  # Tax_value
+    21: "tip",  # Tips_value  (sparse in data)
+    23: "total",  # Total_value
 }
-ITEM_LABEL = 11   # Prod_item_value  -> line_item name
+ITEM_LABEL = 11  # Prod_item_value  -> line_item name
 PRICE_LABEL = 15  # Prod_price_value -> line_item price
 MONEY_FIELDS = {"subtotal", "tax", "tip", "total"}
-SCHEMA_KEYS = ["store", "date", "tax", "tip", "subtotal", "total"]  # line_items added separately
+SCHEMA_KEYS = [
+    "store",
+    "date",
+    "tax",
+    "tip",
+    "subtotal",
+    "total",
+]  # line_items added separately
 
 
 def load_class_names(path: Path) -> dict[int, str]:
@@ -104,7 +112,8 @@ def build_line_items(anns: list[dict]) -> list[dict]:
         y, x = box_center(a["box"])
         heights.append(box_height(a["box"]))
         (items if a["label"] == ITEM_LABEL else prices).append(
-            {"y": y, "x": x, "text": a["text"]})
+            {"y": y, "x": x, "text": a["text"]}
+        )
     if not items:
         return []
 
@@ -137,8 +146,7 @@ def build_line_items(anns: list[dict]) -> list[dict]:
     return line_items
 
 
-def build_record(receipt: dict, class_names: dict[int, str],
-                 dropped: Counter) -> dict:
+def build_record(receipt: dict, class_names: dict[int, str], dropped: Counter) -> dict:
     """Build a receipt record from a WildReceipt JSON object, using the class names to
     map label IDs to schema fields. Returns a dict with keys SCHEMA_KEYS + "line_items".
     """
@@ -222,20 +230,38 @@ def process_split(split: str, class_names: dict[int, str], limit: int | None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["train", "test", "both"], default="both")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="cap receipts per split (validation subset)")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="cap receipts per split (validation subset)",
+    )
     args = ap.parse_args()
 
     class_names = load_class_names(DATA_ROOT / "class_list.txt")
     splits = ["train", "test"] if args.split == "both" else [args.split]
 
     for split in splits:
-        records, summary, out_path, summ_path = process_split(split, class_names, args.limit)
+        records, summary, out_path, summ_path = process_split(
+            split, class_names, args.limit
+        )
         print(f"\n=== {split} -> {out_path} ===")
-        print(json.dumps({k: summary[k] for k in
-                          ["receipts", "field_present", "field_missing",
-                           "line_items_per_receipt_avg", "receipts_with_no_line_items",
-                           "dropped_total"]}, indent=2))
+        print(
+            json.dumps(
+                {
+                    k: summary[k]
+                    for k in [
+                        "receipts",
+                        "field_present",
+                        "field_missing",
+                        "line_items_per_receipt_avg",
+                        "receipts_with_no_line_items",
+                        "dropped_total",
+                    ]
+                },
+                indent=2,
+            )
+        )
         print("dropped categories:", summary["dropped_categories"])
         print(f"--- {min(4, len(records))} sample records ---")
         for rec in records[:4]:

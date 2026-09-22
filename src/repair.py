@@ -1,10 +1,11 @@
 """Repairs the model's raw text output when it doesn't parse as valid JSON. Strips a
 markdown code fence around the payload, removes a trailing comma before a closing
 brace, converts Python literal syntax (single quotes, None instead of null) into
-proper JSON, and closes truncated output cut off mid-structure — tries each fix in
+proper JSON, and closes truncated output cut off mid-structure - tries each fix in
 order and returns the first version that actually parses, or None with a
 "hard_failure" status if none of them do.
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,7 +29,7 @@ def _outer_braces(text: str) -> str | None:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
         return None
-    return text[start:end + 1]
+    return text[start : end + 1]
 
 
 def _fix_trailing_commas(text: str) -> str:
@@ -104,7 +105,7 @@ def _close_truncated(text: str) -> str:
 
 def repair_json(raw: str) -> tuple[dict | None, str]:
     """Attempt to repair a raw string that should be JSON, returning a tuple of (parsed dict or None,
-    status string). Status is one of:
+       status string). Status is one of:
     - "clean": valid JSON, no repair needed
     - "repaired_trailing_comma": valid JSON after removing trailing commas
     - "repaired_python_literal": valid JSON after converting from Python literal syntax
@@ -144,18 +145,31 @@ def _smoke():
 
     cases = [
         ("clean", '{"store": "CVS", "total": "5.40", "line_items": []}'),
-        ("clean (fenced)",
-         '```json\n{"store": "CVS", "total": "5.40", "line_items": []}\n```'),
-        ("repaired_trailing_comma",
-         '{"store": "CVS", "total": "5.40", "line_items": [{"name": "Advil", "price": "5.00"},]}'),
-        ("repaired_python_literal",
-         "{'store': \"Wendy's\", 'total': '5.40', 'tip': None, 'line_items': []}"),
-        ("repaired_truncation (mid-string)",
-         '{"store": "CVS", "line_items": [{"name": "Advil", "price": "5.00"}, '
-         '{"name": "Cough Sy'),
-        ("repaired_truncation (mid-structure)",
-         '{"store": "CVS", "line_items": [{"name": "Advil", "price": "5.00"}'),
-        ("hard_failure (no braces at all)", "the model rambled and never produced json"),
+        (
+            "clean (fenced)",
+            '```json\n{"store": "CVS", "total": "5.40", "line_items": []}\n```',
+        ),
+        (
+            "repaired_trailing_comma",
+            '{"store": "CVS", "total": "5.40", "line_items": [{"name": "Advil", "price": "5.00"},]}',
+        ),
+        (
+            "repaired_python_literal",
+            "{'store': \"Wendy's\", 'total': '5.40', 'tip': None, 'line_items': []}",
+        ),
+        (
+            "repaired_truncation (mid-string)",
+            '{"store": "CVS", "line_items": [{"name": "Advil", "price": "5.00"}, '
+            '{"name": "Cough Sy',
+        ),
+        (
+            "repaired_truncation (mid-structure)",
+            '{"store": "CVS", "line_items": [{"name": "Advil", "price": "5.00"}',
+        ),
+        (
+            "hard_failure (no braces at all)",
+            "the model rambled and never produced json",
+        ),
         ("hard_failure (irrecoverable garbage)", '{"store": "CVS", "line_items": [{{{'),
     ]
     print(f"{'expected':<34}{'got':<28}{'match':<7}parsed")

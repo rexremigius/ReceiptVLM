@@ -1,0 +1,39 @@
+# Dependency set for the hosted HF Spaces (ZeroGPU) build. Kept separate from
+# requirements.txt on purpose: that file pins transformers==4.49.0 because newer releases
+# make Qwen2's image processor "fast"-only and break mlx_vlm's non-torch preprocessing.
+# Nothing here runs on MLX, so the Space wants the opposite -- a transformers new enough
+# to expose the restructured Qwen2.5-VL, which is what the converted adapter targets.
+#
+# Install locally only to run scripts/validate_peft_adapter.py; the on-device MLX stack
+# still uses requirements.txt.
+
+# ZeroGPU supports torch 2.8.0 through 2.13.0. 2.8.0 matches requirements.txt's pin and is
+# the floor for the ahead-of-time compilation ZeroGPU offers in place of torch.compile.
+torch==2.8.0
+torchvision==0.23.0
+
+# Qwen2_5_VLForConditionalGeneration here nests the decoder at
+# model.language_model.layers (verified in v4.57.1). convert_mlx_adapter_to_peft.py's
+# default --layout new emits keys for exactly that path; transformers <= 4.51 hung the
+# decoder off model.layers instead, which would match nothing.
+transformers==4.57.1
+peft==0.17.1
+accelerate==1.10.1
+safetensors==0.6.2
+
+# ZeroGPU only works with the Gradio SDK, and @spaces.GPU comes from this package. It is
+# a no-op off-Spaces, so it stays importable when running the app locally.
+gradio==5.49.1
+spaces==0.42.1
+
+# Image handling. pillow-heif registers a HEIC decoder that stock Pillow lacks entirely,
+# which iPhone receipt uploads need.
+pillow==11.3.0
+pillow-heif==1.1.0
+
+# Dashboard charts, carried over from the Streamlit app.
+plotly==6.3.1
+
+# eval.py's bootstrap CI / paired-bootstrap.
+numpy==2.2.6
+scipy==1.15.3
