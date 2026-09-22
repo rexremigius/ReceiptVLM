@@ -1,29 +1,11 @@
-"""Transformers/CUDA inference backend for the hosted Space.
+"""Transformers/CUDA inference backend, used wherever mlx_vlm is unavailable.
 
-Replaces mlx_vlm for deployments that are not Apple Silicon. The MLX path stays the
-on-device story; this one exists because ZeroGPU (the only free always-on GPU for a
-public demo) is CUDA and Gradio-only.
-
-Three details are matched to the MLX run deliberately, because getting any of them wrong
-degrades output in ways that look like a broken fine-tune rather than a broken port:
-
-  * Image sizing. mlx_vlm.utils.resize_image scales to *fit inside* (max_w, max_h) with
-    aspect preserved; it does not stretch. fit_within() reproduces it verbatim, including
-    upscaling images smaller than the box, which is what the checkpoint saw in training.
-
-  * Decoding. Greedy, max_new_tokens=1536, no repetition penalty -- zeroshot.py's
-    defaults, including its recorded finding that a repetition penalty wrecks JSON
-    (micro-F1 0.525 -> 0.069) because JSON is inherently repetitive.
-
-  * Logprob bookkeeping. confidence.py's third signal needs
-    (chunk_text, token_logprob) pairs whose concatenated text is exactly the string the
-    field spans are computed against. mlx_vlm got that free from stream_generate; here we
-    decode token by token and join, which preserves the invariant by construction.
-
-Quantization is deliberately absent. The INT4 work in quantize.py was a memory/latency
-tradeoff for on-device Apple Silicon; a ZeroGPU 'large' slice is 48 GB, so fp16 fits with
-room to spare and is the better-scoring tier anyway (0.809 vs 0.796 micro-F1).
+Matches the MLX run on the three things that silently degrade output if wrong:
+aspect-preserving 768x1024 sizing, greedy decoding with no repetition penalty, and
+(chunk_text, logprob) pairs whose text concatenates to the completion exactly.
+fp16 rather than 4-bit; bitsandbytes NF4 is slower on CUDA and scored lower.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -55,7 +37,7 @@ MAX_NEW_TOKENS = 1536
 def fit_within(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     """Port of mlx_vlm.utils.resize_image: scale to fit the box, aspect preserved.
 
-    Does not clamp the ratio to <= 1, matching upstream -- a receipt smaller than the box
+    Does not clamp the ratio to <= 1, matching upstream - a receipt smaller than the box
     gets upscaled.
     """
 
@@ -75,18 +57,21 @@ class ReceiptModel:
     """The fine-tuned extractor, loaded once and reused.
 
     ZeroGPU requires the model to be placed on cuda at module import rather than lazily
-    inside the @spaces.GPU function -- outside that function a CUDA emulation mode is
+    inside the @spaces.GPU function - outside that function a CUDA emulation mode is
     active, and placements made during startup are what get optimized. So callers should
     construct and load this at module scope.
     """
 
-    def __init__(self, base_model: str = HF_BASE_MODEL,
-                 adapter_path: Path | str | None = DEFAULT_ADAPTER,
-                 load_4bit: bool | None = None) -> None:
+    def __init__(
+        self,
+        base_model: str = HF_BASE_MODEL,
+        adapter_path: Path | str | None = DEFAULT_ADAPTER,
+        load_4bit: bool | None = None,
+    ) -> None:
         self.base_model = base_model
         self.adapter_path = Path(adapter_path) if adapter_path else None
         self.device, self.dtype = _pick_device_dtype()
-        # An adapter only works against the base it was fit to -- that is the whole
+        # An adapter only works against the base it was fit to - that is the whole
         # lesson of the fp16 transfer failure (see scripts/validate_peft_adapter.py's
         # header). An adapter retrained in NF4 must be served in NF4, so this is
         # switchable, defaulting from the environment so a Space can set it as a variable.
@@ -120,7 +105,8 @@ class ReceiptModel:
             )
 
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.base_model, **kwargs)
+            self.base_model, **kwargs
+        )
         self.processor = AutoProcessor.from_pretrained(self.base_model)
 
         if self.adapter_path is not None:
@@ -132,17 +118,19 @@ class ReceiptModel:
                 )
             from peft import PeftModel
 
-            model = PeftModel.from_pretrained(model, str(self.adapter_path),
-                                              is_trainable=False)
+            model = PeftModel.from_pretrained(
+                model, str(self.adapter_path), is_trainable=False
+            )
             n_injected = sum(
-                1 for _, m in model.named_modules()
+                1
+                for _, m in model.named_modules()
                 if hasattr(getattr(m, "lora_A", None), "keys")
             )
             if n_injected == 0:
                 raise RuntimeError(
                     "The adapter injected no LoRA modules, so this is the base model "
                     "wearing a no-op adapter. target_modules in adapter_config.json does "
-                    "not match this transformers version's layout -- re-run the converter "
+                    "not match this transformers version's layout - re-run the converter "
                     "with the other --layout."
                 )
 
@@ -162,17 +150,25 @@ class ReceiptModel:
             raise RuntimeError("ReceiptModel.load() has not been called.")
 
         image = fit_within(image.convert("RGB"), *IMAGE_RESIZE)
-        messages = [{"role": "user", "content": [{"type": "image"},
-                                                 {"type": "text", "text": PROMPT}]}]
-        text = self.processor.apply_chat_template(messages, tokenize=False,
-                                                  add_generation_prompt=True)
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": PROMPT}],
+            }
+        ]
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
         inputs = self.processor(text=[text], images=[image], return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.inference_mode():
             out = self.model.generate(
-                **inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False,
-                output_scores=True, return_dict_in_generate=True,
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=False,
+                output_scores=True,
+                return_dict_in_generate=True,
             )
 
         prompt_len = inputs["input_ids"].shape[1]
@@ -181,8 +177,10 @@ class ReceiptModel:
         # Trim at the first EOS so the terminator does not contribute an empty chunk with
         # a logprob attached, which would perturb the trailing field's average.
         tokenizer = self.processor.tokenizer
-        eos_ids = {tokenizer.eos_token_id, *(tokenizer.convert_tokens_to_ids(t)
-                                             for t in ("<|im_end|>",))}
+        eos_ids = {
+            tokenizer.eos_token_id,
+            *(tokenizer.convert_tokens_to_ids(t) for t in ("<|im_end|>",)),
+        }
         eos_ids.discard(None)
         keep = len(generated)
         for i, tok in enumerate(generated.tolist()):
@@ -201,8 +199,12 @@ class ReceiptModel:
         return "".join(p for p, _ in chunks), chunks
 
 
-def analyze(model: ReceiptModel, scorer: ConfidenceScorer, image: Image.Image,
-            filename: str = "upload.jpg") -> dict:
+def analyze(
+    model: ReceiptModel,
+    scorer: ConfidenceScorer,
+    image: Image.Image,
+    filename: str = "upload.jpg",
+) -> dict:
     """Run one receipt end to end: generate, repair, normalize, score confidence.
 
     Mirrors serve.py's /infer, including the 3-signal confidence path, but returns a
@@ -212,8 +214,9 @@ def analyze(model: ReceiptModel, scorer: ConfidenceScorer, image: Image.Image,
     raw, chunks = model.generate_with_logprobs(image)
     parsed, status = repair_json(raw)
     record = normalize(parsed)
-    record["_field_logprobs"] = {f: field_avg_logprob(f, raw, chunks)
-                                 for f in SCALAR_FIELDS}
+    record["_field_logprobs"] = {
+        f: field_avg_logprob(f, raw, chunks) for f in SCALAR_FIELDS
+    }
     record["_line_item_logprobs"] = [
         line_item_avg_logprob(i, raw, chunks)
         for i in range(len(record.get("line_items") or []))

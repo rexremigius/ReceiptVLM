@@ -1,20 +1,10 @@
-"""Checks that the converted peft adapter applies the same update as the MLX original.
+"""Checks the converted adapter applies the same update as the MLX original.
 
-convert_mlx_adapter_to_peft.py claims the two conventions differ only by a transpose of
-each matrix, with alpha and rank carried over so the scales match. That claim is testable
-without the 7 GB base model: push random activations through both update paths using the
-real trained weights and compare.
-
-  MLX   delta = (alpha / rank)   * ((x @ A) @ B)
-  peft  delta = (lora_alpha / r) * ((x @ lora_A.weight.T) @ lora_B.weight.T)
-
-A pass here means the port is algebraically faithful. It says nothing about end-to-end
-accuracy on an fp16 base -- that is validate_peft_adapter.py's job.
-
-Usage:
-    python scripts/verify_adapter_equivalence.py \
-        --mlx-adapter checkpoints/final --peft-adapter checkpoints/final_peft
+Pushes random activations through both update paths using the real trained weights:
+MLX (alpha/rank) * ((x @ A) @ B) against peft (lora_alpha/r) * lora_B(lora_A(x)).
+Proves the algebra, not the accuracy; validate_peft_adapter.py measures that.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,11 +23,14 @@ def load_all(path: Path) -> dict[str, np.ndarray]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--mlx-adapter", type=Path, default=Path("checkpoints/final"))
     ap.add_argument("--peft-adapter", type=Path, default=Path("checkpoints/final_peft"))
-    ap.add_argument("--batch", type=int, default=8, help="Random activation rows per module")
+    ap.add_argument(
+        "--batch", type=int, default=8, help="Random activation rows per module"
+    )
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -54,7 +47,7 @@ def main() -> None:
     peft = load_all(args.peft_adapter / "adapter_model.safetensors")
 
     # Every MLX module must appear exactly once on the peft side, and vice versa.
-    mlx_modules = {k[len(MLX_TEXT_PREFIX):].rsplit(".", 1)[0] for k in mlx}
+    mlx_modules = {k[len(MLX_TEXT_PREFIX) :].rsplit(".", 1)[0] for k in mlx}
     peft_modules = {k.split(".layers.", 1)[1].rsplit(".lora_", 1)[0] for k in peft}
     peft_modules = {f"layers.{m}" for m in peft_modules}
     assert mlx_modules == peft_modules, (
@@ -68,20 +61,26 @@ def main() -> None:
     n_checked = 0
 
     for module in sorted(mlx_modules):
-        A = mlx[f"{MLX_TEXT_PREFIX}{module}.A"]          # (in, r)
-        B = mlx[f"{MLX_TEXT_PREFIX}{module}.B"]          # (r, out)
-        layer_and_rest = module[len("layers."):]
+        A = mlx[f"{MLX_TEXT_PREFIX}{module}.A"]  # (in, r)
+        B = mlx[f"{MLX_TEXT_PREFIX}{module}.B"]  # (r, out)
+        layer_and_rest = module[len("layers.") :]
         # Match on suffix so this check stays independent of which layout was emitted.
         a_keys = [k for k in peft if k.endswith(f".{layer_and_rest}.lora_A.weight")]
         b_keys = [k for k in peft if k.endswith(f".{layer_and_rest}.lora_B.weight")]
-        assert len(a_keys) == 1 and len(b_keys) == 1, f"Ambiguous peft keys for {module}"
-        lora_A = peft[a_keys[0]]                          # (r, in)
-        lora_B = peft[b_keys[0]]                          # (out, r)
+        assert (
+            len(a_keys) == 1 and len(b_keys) == 1
+        ), f"Ambiguous peft keys for {module}"
+        lora_A = peft[a_keys[0]]  # (r, in)
+        lora_B = peft[b_keys[0]]  # (out, r)
 
-        assert lora_A.shape == (A.shape[1], A.shape[0]), (
-            f"{module}: lora_A is {lora_A.shape}, expected {(A.shape[1], A.shape[0])}")
-        assert lora_B.shape == (B.shape[1], B.shape[0]), (
-            f"{module}: lora_B is {lora_B.shape}, expected {(B.shape[1], B.shape[0])}")
+        assert lora_A.shape == (
+            A.shape[1],
+            A.shape[0],
+        ), f"{module}: lora_A is {lora_A.shape}, expected {(A.shape[1], A.shape[0])}"
+        assert lora_B.shape == (
+            B.shape[1],
+            B.shape[0],
+        ), f"{module}: lora_B is {lora_B.shape}, expected {(B.shape[1], B.shape[0])}"
 
         x = rng.standard_normal((args.batch, A.shape[0]), dtype=np.float32)
         delta_mlx = mlx_scale * ((x @ A) @ B)
@@ -94,8 +93,10 @@ def main() -> None:
             worst_abs, worst_rel, worst_name = abs_err, rel_err, module
         n_checked += 1
 
-    print(f"Compared update paths on {n_checked} modules "
-          f"({args.batch} random rows each).")
+    print(
+        f"Compared update paths on {n_checked} modules "
+        f"({args.batch} random rows each)."
+    )
     print(f"Worst absolute difference: {worst_abs:.3e}  ({worst_name})")
     print(f"Worst relative difference: {worst_rel:.3e}")
 
@@ -103,9 +104,13 @@ def main() -> None:
     # Confirm the update is actually non-trivial.
     nonzero = sum(1 for k, v in mlx.items() if k.endswith(".B") and np.abs(v).max() > 0)
     total_b = sum(1 for k in mlx if k.endswith(".B"))
-    print(f"Non-zero B matrices: {nonzero}/{total_b} "
-          f"(a zeroed adapter would match trivially)")
-    assert nonzero == total_b, "Some B matrices are all zero -- adapter may be untrained."
+    print(
+        f"Non-zero B matrices: {nonzero}/{total_b} "
+        f"(a zeroed adapter would match trivially)"
+    )
+    assert (
+        nonzero == total_b
+    ), "Some B matrices are all zero - adapter may be untrained."
 
     assert worst_abs < 1e-4, f"Update paths diverge (max abs {worst_abs:.3e})"
     print("\nPASS: the converted adapter applies the same update as the MLX original.")

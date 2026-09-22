@@ -27,6 +27,7 @@ data/processed/_confidence_*.json
 # numbers that matter are written up in RESULTS.md §5.
 data/processed/_benchmark_*.json
 data/processed/peft_test*.jsonl
+data/processed/*actual_run*
 
 # macOS
 .DS_Store

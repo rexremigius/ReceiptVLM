@@ -1,24 +1,11 @@
-"""Presentation layer for the Gradio Space.
+"""Presentation layer shared by the Streamlit app and the Gradio Space.
 
-The markup here is derived from app/streamlit_app.py, which already built its visuals as
-HTML strings handed to st.markdown(unsafe_allow_html=True) -- the same strings work
-verbatim in gr.HTML, so only the widget shell differed.
-
-NOT yet shared with the Streamlit app. Its builders are interleaved with st.* calls
-inside render_receipt_tab/render_dashboard_tab and its stylesheet is ~50 lines of
-Streamlit-internal selectors (data-testid="stTabs", data-baseweb=..., and so on) that have
-no meaning in Gradio, so folding it onto this module is a separate, invasive change that
-cannot be validated without running the Streamlit + FastAPI pair. Until then the two UIs
-do hold parallel copies of the palette and the row markup; changing colours or the field
-table means editing both. app/streamlit_app.py remains the on-device MLX front end.
-
-Theming works differently here. In Streamlit a radio flipped st.session_state and the
-script rerun repainted everything. Gradio has no rerun, so threading a theme dict through
-every component would make the theme control an input to every element on the page.
-Instead both palettes are emitted as CSS variables under `.rv-dark` / `.rv-light` and each
-block self-wraps via wrap(), so switching themes is just re-emitting the same HTML with a
-different wrapper class -- no Python-side palette plumbing.
+Both UIs already built their visuals as HTML strings, so the markup is portable and
+only the widget shell differs. Both palettes ship as CSS variables under .rv-dark /
+.rv-light, so switching theme re-emits the same HTML with a different wrapper class
+rather than threading a palette through every component.
 """
+
 from __future__ import annotations
 
 import base64
@@ -26,30 +13,60 @@ import io
 
 from PIL import Image
 
-FIELD_LABELS = {"store": "Store", "date": "Date", "tax": "Tax", "tip": "Tip",
-                "subtotal": "Subtotal", "total": "Total"}
+FIELD_LABELS = {
+    "store": "Store",
+    "date": "Date",
+    "tax": "Tax",
+    "tip": "Tip",
+    "subtotal": "Subtotal",
+    "total": "Total",
+}
 
 SCALAR_ORDER = ["store", "date", "tax", "tip", "subtotal", "total"]
 
 # Category colours validated CVD-safe against each mode's surface.
 THEMES = {
     "Dark": {
-        "bg": "#14161B", "surface": "#1E212B", "surface2": "#262A35", "border": "#2C313D",
-        "text": "#F4F6FA", "text2": "#9BA3B2", "text_muted": "#6B7280",
-        "green": "#22DD8A", "on_green": "#0B1F16",
+        "bg": "#14161B",
+        "surface": "#1E212B",
+        "surface2": "#262A35",
+        "border": "#2C313D",
+        "text": "#F4F6FA",
+        "text2": "#9BA3B2",
+        "text_muted": "#6B7280",
+        "green": "#22DD8A",
+        "on_green": "#0B1F16",
         "hero_grad": "linear-gradient(145deg, #1F2A26 0%, #1E212B 55%)",
-        "cats": {"dining": "#60A5FA", "grocery": "#34D399", "fuel": "#FB923C",
-                 "retail": "#C084FC", "transport": "#FACC15", "misc": "#F472B6",
-                 "other": "#94A3B8"},
+        "cats": {
+            "dining": "#60A5FA",
+            "grocery": "#34D399",
+            "fuel": "#FB923C",
+            "retail": "#C084FC",
+            "transport": "#FACC15",
+            "misc": "#F472B6",
+            "other": "#94A3B8",
+        },
     },
     "Light": {
-        "bg": "#F4F6F9", "surface": "#FFFFFF", "surface2": "#EEF1F6", "border": "#E3E8EF",
-        "text": "#14213B", "text2": "#566175", "text_muted": "#8A94A6",
-        "green": "#12B76A", "on_green": "#FFFFFF",
+        "bg": "#F4F6F9",
+        "surface": "#FFFFFF",
+        "surface2": "#EEF1F6",
+        "border": "#E3E8EF",
+        "text": "#14213B",
+        "text2": "#566175",
+        "text_muted": "#8A94A6",
+        "green": "#12B76A",
+        "on_green": "#FFFFFF",
         "hero_grad": "linear-gradient(145deg, #E8F7EF 0%, #FFFFFF 55%)",
-        "cats": {"dining": "#2563EB", "grocery": "#059669", "fuel": "#EA580C",
-                 "retail": "#7C3AED", "transport": "#A16207", "misc": "#DB2777",
-                 "other": "#64748B"},
+        "cats": {
+            "dining": "#2563EB",
+            "grocery": "#059669",
+            "fuel": "#EA580C",
+            "retail": "#7C3AED",
+            "transport": "#A16207",
+            "misc": "#DB2777",
+            "other": "#64748B",
+        },
     },
 }
 
@@ -65,9 +82,12 @@ CONFIDENCE_COLORS = {
     "unscored": ("var(--text-muted)", "No confidence signal"),
 }
 
-FONT_SANS = ("'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, "
-             "sans-serif")
-FONT_MONO = "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace"
+FONT_SANS = (
+    "'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, " "sans-serif"
+)
+FONT_MONO = (
+    "'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace"
+)
 
 THEME_CLASS = {"Dark": "rv-dark", "Light": "rv-light"}
 
@@ -75,7 +95,7 @@ THEME_CLASS = {"Dark": "rv-dark", "Light": "rv-light"}
 def vars_block(selector: str, theme: str = "Dark") -> str:
     """Emit one palette as CSS variables under `selector`.
 
-    For hosts that scope variables differently from the Gradio app -- the Streamlit app
+    For hosts that scope variables differently from the Gradio app - the Streamlit app
     puts them on :root, since its rerun model repaints the whole page anyway.
     """
 
@@ -226,7 +246,7 @@ WIDGET_CSS = """
 }
 .gradio-container .tabs button.selected { color: var(--text-primary) !important; }
 /* The active-tab underline is a ::after pseudo-element carrying gradio's own accent
-   (orange), painted over any border-bottom -- so it has to be recoloured directly. */
+   (orange), painted over any border-bottom - so it has to be recoloured directly. */
 .gradio-container .tabs button::after,
 .gradio-container .tabs button.selected::after {
   background: var(--green) !important;
@@ -271,13 +291,13 @@ WIDGET_CSS = """
    enough: Gradio stacks icon / "Drop File Here" / "- or -" / "Click to Upload"
    vertically, so the content drives the height. Laying that stack out horizontally and
    dropping the separator is what actually shrinks it. Selectors stay on semantic class
-   names under .rv-file -- Gradio's hashed svelte-* classes change between releases. */
+   names under .rv-file - Gradio's hashed svelte-* classes change between releases. */
 .rv-file button.center {
   min-height: 78px !important;
   height: 78px !important;
   padding: 0 1.1rem !important;
   /* The button is flex-direction: column, so justify-content controls the *vertical*
-     axis here -- align-items is what moves content left. */
+     axis here - align-items is what moves content left. */
   align-items: flex-start !important;
   justify-content: center !important;
 }
@@ -350,11 +370,13 @@ def upload_css(max_upload_bytes: int) -> str:
     built-in dropzone wording, which is unreachable bare text.
     """
 
-    return (".rv-file button .wrap::after {"
-            f' content: "{max_upload_bytes // (1024 * 1024)}MB per file '
-            '\\2022  PNG, JPG, WEBP, HEIC, HEIF";'
-            " font-size: 0.8rem; color: var(--text-muted);"
-            " margin-left: 0.7rem; white-space: nowrap; }")
+    return (
+        ".rv-file button .wrap::after {"
+        f' content: "{max_upload_bytes // (1024 * 1024)}MB per file '
+        '\\2022  PNG, JPG, WEBP, HEIC, HEIF";'
+        " font-size: 0.8rem; color: var(--text-muted);"
+        " margin-left: 0.7rem; white-space: nowrap; }"
+    )
 
 
 def full_css() -> str:
@@ -363,18 +385,20 @@ def full_css() -> str:
     Specificity is deliberate. The container rules come first at two classes
     (`.gradio-container.rv-light-root`), and the per-block rules follow, also at two
     classes (`.gradio-container .rv-dark`). Equal specificity means source order decides,
-    so a block's own wrapper always wins over the container default -- which is what lets
+    so a block's own wrapper always wins over the container default - which is what lets
     wrap() theme an individual block regardless of the root class.
     """
 
-    return "\n".join([
-        _vars_block(".gradio-container", THEMES["Dark"]),
-        _vars_block(f".gradio-container.{ROOT_LIGHT_CLASS}", THEMES["Light"]),
-        _vars_block(".gradio-container .rv-dark", THEMES["Dark"]),
-        _vars_block(".gradio-container .rv-light", THEMES["Light"]),
-        SHARED_CSS,
-        WIDGET_CSS,
-    ])
+    return "\n".join(
+        [
+            _vars_block(".gradio-container", THEMES["Dark"]),
+            _vars_block(f".gradio-container.{ROOT_LIGHT_CLASS}", THEMES["Light"]),
+            _vars_block(".gradio-container .rv-dark", THEMES["Dark"]),
+            _vars_block(".gradio-container .rv-light", THEMES["Light"]),
+            SHARED_CSS,
+            WIDGET_CSS,
+        ]
+    )
 
 
 def wrap(html: str, theme: str | None = "Dark") -> str:
@@ -392,6 +416,7 @@ def wrap(html: str, theme: str | None = "Dark") -> str:
 
 # --- small pieces ------------------------------------------------------------------
 
+
 def category_chip(cat: str, theme: str = "Dark") -> str:
     cats = THEMES.get(theme, THEMES["Dark"])["cats"]
     color = cats.get(cat, cats["other"])
@@ -399,15 +424,17 @@ def category_chip(cat: str, theme: str = "Dark") -> str:
 
 
 def stat_card(label: str, value: str) -> str:
-    return (f'<div class="stat-card"><div class="stat-label">{label}</div>'
-            f'<div class="stat-value">{value}</div></div>')
+    return (
+        f'<div class="stat-card"><div class="stat-label">{label}</div>'
+        f'<div class="stat-value">{value}</div></div>'
+    )
 
 
 def confidence_dot(badge: dict | None) -> str:
     """A coloured dot carrying the calibrated confidence level, with the score on hover.
 
     The Streamlit app logged confidence but never showed it. Surfacing it here is the
-    point of the demo -- the calibrated score is the project's headline result -- and a
+    point of the demo - the calibrated score is the project's headline result - and a
     dot keeps it from competing with the value itself.
     """
 
@@ -423,8 +450,10 @@ def confidence_dot(badge: dict | None) -> str:
     # attribute: a browser tooltip needs ~1s of hover on an 8px target, which in practice
     # meant the calibrated score was unreachable. aria-label keeps it available to
     # screen readers, which the styled tooltip alone would not be.
-    return (f'<span class="dot-conf" style="background:{color};" '
-            f'data-tip="{tip}" aria-label="{tip}"></span>')
+    return (
+        f'<span class="dot-conf" style="background:{color};" '
+        f'data-tip="{tip}" aria-label="{tip}"></span>'
+    )
 
 
 def confidence_legend() -> str:
@@ -441,10 +470,15 @@ def confidence_legend() -> str:
         if description in seen:
             continue
         seen.add(description)
-        parts.append(f'<span><i class="dot-conf" style="background:{color};margin-left:0;'
-                     f'"></i>{description}</span>')
-    return ('<div class="conf-legend">' + "".join(parts)
-            + '<span>hover a dot for the calibrated score</span></div>')
+        parts.append(
+            f'<span><i class="dot-conf" style="background:{color};margin-left:0;'
+            f'"></i>{description}</span>'
+        )
+    return (
+        '<div class="conf-legend">'
+        + "".join(parts)
+        + "<span>hover a dot for the calibrated score</span></div>"
+    )
 
 
 def image_data_uri(image_bytes: bytes) -> str:
@@ -465,7 +499,9 @@ def image_data_uri(image_bytes: bytes) -> str:
 
 
 def receipt_frame(image_bytes: bytes) -> str:
-    return f'<div class="receipt-frame"><img src="{image_data_uri(image_bytes)}" /></div>'
+    return (
+        f'<div class="receipt-frame"><img src="{image_data_uri(image_bytes)}" /></div>'
+    )
 
 
 # Sample-receipt labelling lives in src/samples.py, which owns both the label format and
@@ -474,9 +510,15 @@ def receipt_frame(image_bytes: bytes) -> str:
 
 # --- composite blocks --------------------------------------------------------------
 
-def detail_panel(prediction: dict, confidence: dict | None = None,
-                 ground_truth: dict | None = None, category: str | None = None,
-                 theme: str = "Dark", format_item_name=None) -> str:
+
+def detail_panel(
+    prediction: dict,
+    confidence: dict | None = None,
+    ground_truth: dict | None = None,
+    category: str | None = None,
+    theme: str = "Dark",
+    format_item_name=None,
+) -> str:
     """The extracted-fields table, optionally beside a reference column."""
 
     gt = ground_truth
@@ -487,25 +529,37 @@ def detail_panel(prediction: dict, confidence: dict | None = None,
     cols = "120px 1fr 1fr" if gt else "130px 1fr"
     header_cells = ["Field", "Value"] + (["Reference"] if gt else [])
 
-    html = [f'<div style="display:flex;align-items:center;gap:0.6rem;'
-            f'margin-bottom:0.7rem;flex-wrap:wrap;">'
-            f'<span style="font-size:1.1rem;font-weight:800;">'
-            f'{store or "Receipt"}</span>{chip}</div>']
-    html.append(f'<div class="{row_class} header" style="grid-template-columns:{cols};">'
-                + "".join(f"<div>{c}</div>" for c in header_cells) + "</div>")
+    html = [
+        f'<div style="display:flex;align-items:center;gap:0.6rem;'
+        f'margin-bottom:0.7rem;flex-wrap:wrap;">'
+        f'<span style="font-size:1.1rem;font-weight:800;">'
+        f'{store or "Receipt"}</span>{chip}</div>'
+    ]
+    html.append(
+        f'<div class="{row_class} header" style="grid-template-columns:{cols};">'
+        + "".join(f"<div>{c}</div>" for c in header_cells)
+        + "</div>"
+    )
 
     for field in SCALAR_ORDER:
         val = prediction.get(field)
-        val = val if val is not None else "—"
+        val = val if val is not None else " - "
         dot = confidence_dot((confidence or {}).get(field))
-        cells = [f'<div class="field-name">{FIELD_LABELS[field]}</div>',
-                 f'<div class="field-value">{val}{dot}</div>']
+        cells = [
+            f'<div class="field-name">{FIELD_LABELS[field]}</div>',
+            f'<div class="field-value">{val}{dot}</div>',
+        ]
         if gt:
             gt_val = gt.get(field)
-            cells.append(f'<div class="field-gt">'
-                         f'{gt_val if gt_val is not None else "—"}</div>')
-        html.append(f'<div class="{row_class}" style="grid-template-columns:{cols};">'
-                    + "".join(cells) + "</div>")
+            cells.append(
+                f'<div class="field-gt">'
+                f'{gt_val if gt_val is not None else " - "}</div>'
+            )
+        html.append(
+            f'<div class="{row_class}" style="grid-template-columns:{cols};">'
+            + "".join(cells)
+            + "</div>"
+        )
 
     items = prediction.get("line_items") or []
     li_conf = (confidence or {}).get("line_items") or {}
@@ -513,20 +567,28 @@ def detail_panel(prediction: dict, confidence: dict | None = None,
     html.append(f'<div class="li-head">Line items{agg_dot}</div>')
     if items:
         item_badges = li_conf.get("items") or []
-        html.append('<div class="field-row header" '
-                    'style="grid-template-columns:1fr 110px;">'
-                    "<div>Name</div><div>Price</div></div>")
+        html.append(
+            '<div class="field-row header" '
+            'style="grid-template-columns:1fr 110px;">'
+            "<div>Name</div><div>Price</div></div>"
+        )
         for idx, it in enumerate(items):
             raw_name = it.get("name")
-            name = (format_item_name(raw_name) if format_item_name else raw_name) or "—"
-            price = it.get("price") if it.get("price") is not None else "—"
+            name = (
+                format_item_name(raw_name) if format_item_name else raw_name
+            ) or " - "
+            price = it.get("price") if it.get("price") is not None else " - "
             dot = confidence_dot(item_badges[idx] if idx < len(item_badges) else None)
-            html.append('<div class="field-row" style="grid-template-columns:1fr 110px;">'
-                        f'<div class="li-name">{name}</div>'
-                        f'<div class="li-price">{price}{dot}</div></div>')
+            html.append(
+                '<div class="field-row" style="grid-template-columns:1fr 110px;">'
+                f'<div class="li-name">{name}</div>'
+                f'<div class="li-price">{price}{dot}</div></div>'
+            )
     else:
-        html.append('<div class="section-sub" style="margin-top:0.5rem;">'
-                    "No line items found.</div>")
+        html.append(
+            '<div class="section-sub" style="margin-top:0.5rem;">'
+            "No line items found.</div>"
+        )
 
     if confidence:
         html.append(confidence_legend())
@@ -537,7 +599,7 @@ def detail_panel(prediction: dict, confidence: dict | None = None,
 def analyzing_panel(theme: str = "Dark") -> str:
     """Placeholder shown while the model runs.
 
-    Mirrors the shape of detail_panel -- a header line plus six field rows -- so the real
+    Mirrors the shape of detail_panel - a header line plus six field rows - so the real
     result replaces it in place rather than the layout jumping. Widths vary per row so it
     reads as content loading rather than a progress bar.
     """
@@ -553,24 +615,27 @@ def analyzing_panel(theme: str = "Dark") -> str:
         '<div class="analyzing-head"><span class="pulse"></span>'
         'Analyzing receipt<span class="ell"></span></div>'
         f'<div class="skel" style="width:38%;height:1.05rem;margin-bottom:1rem"></div>'
-        f'{rows}'
+        f"{rows}"
         '<div class="li-head" style="opacity:0.65">Line items</div>'
         '<div class="skel-row"><div class="skel" style="width:70%"></div>'
         '<div class="skel" style="width:28%"></div></div>'
         '<div class="skel-row"><div class="skel" style="width:52%"></div>'
         '<div class="skel" style="width:28%"></div></div>'
-        '</div>'
+        "</div>"
     )
 
 
-def overview_blocks(dash: dict, cats: dict | None, theme: str = "Dark",
-                    infer_category=None) -> str:
+def overview_blocks(
+    dash: dict, cats: dict | None, theme: str = "Dark", infer_category=None
+) -> str:
     """Hero + stat cards + recent transactions. Charts are separate gr.Plot components."""
 
     n = dash.get("n_receipts", 0)
     if not n:
-        return ('<div class="panel"><div class="empty-note">'
-                "Analyze a receipt to build your spending overview.</div></div>")
+        return (
+            '<div class="panel"><div class="empty-note">'
+            "Analyze a receipt to build your spending overview.</div></div>"
+        )
 
     n_priced = dash.get("n_priced") or 0
     avg = dash["total_spend"] / n_priced if n_priced else 0
@@ -579,24 +644,30 @@ def overview_blocks(dash: dict, cats: dict | None, theme: str = "Dark",
         f'<div class="hero-value"><span class="cur">$</span>'
         f'{dash["total_spend"]:,.2f}</div>'
         f'<div class="hero-sub">across {n_priced} of {n} analyzed receipts</div></div>',
-        '<div class="stat-grid">' + stat_card("Receipts", f"{n}")
-        + stat_card("Avg / receipt", f"${avg:,.2f}") + "</div>",
+        '<div class="stat-grid">'
+        + stat_card("Receipts", f"{n}")
+        + stat_card("Avg / receipt", f"${avg:,.2f}")
+        + "</div>",
     ]
 
     recent = dash.get("recent") or []
     if recent:
         out.append('<div class="section-title">Recent transactions</div>')
-        out.append(transactions_panel(recent, theme=theme,
-                                      infer_category=infer_category))
+        out.append(
+            transactions_panel(recent, theme=theme, infer_category=infer_category)
+        )
 
     if dash.get("caveat"):
-        out.append(f'<div class="section-sub" style="margin-top:0.8rem;">'
-                   f'{dash["caveat"]}</div>')
+        out.append(
+            f'<div class="section-sub" style="margin-top:0.8rem;">'
+            f'{dash["caveat"]}</div>'
+        )
     return "".join(out)
 
 
-def transactions_panel(recent: list[dict], theme: str = "Dark",
-                       infer_category=None) -> str:
+def transactions_panel(
+    recent: list[dict], theme: str = "Dark", infer_category=None
+) -> str:
     """The recent-transactions list.
 
     Separate from overview_blocks so a caller can place it after the charts (the
@@ -605,15 +676,17 @@ def transactions_panel(recent: list[dict], theme: str = "Dark",
 
     rows = []
     for r in recent:
-        total = f'${r["total"]}' if r.get("total") else "—"
+        total = f'${r["total"]}' if r.get("total") else " - "
         cat = r.get("category")
         if cat is None and infer_category is not None:
             cat = infer_category({"store": r.get("store") or ""})
         chip = category_chip(cat, theme) if cat else ""
-        rows.append('<div class="txn">'
-                    f'<div class="txn-store">{r.get("store") or "—"}</div>{chip}'
-                    f'<div class="txn-date">{r.get("date") or "—"}</div>'
-                    f'<div class="txn-amt">{total}</div></div>')
+        rows.append(
+            '<div class="txn">'
+            f'<div class="txn-store">{r.get("store") or " - "}</div>{chip}'
+            f'<div class="txn-date">{r.get("date") or " - "}</div>'
+            f'<div class="txn-amt">{total}</div></div>'
+        )
     return '<div class="panel">' + "".join(rows) + "</div>"
 
 
@@ -621,16 +694,23 @@ def style_fig(fig, theme: str = "Dark"):
     """Apply the palette to a plotly figure (charts cannot read CSS variables)."""
 
     T = THEMES.get(theme, THEMES["Dark"])
-    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      margin=dict(t=8, b=8, l=8, r=8), font_color=T["text2"],
-                      font_family="Manrope",
-                      # plotly defaults to 450px, which dominates the page next to the
-                      # stat cards; this matches the dashboard card proportions.
-                      height=300, autosize=True)
-    fig.update_xaxes(gridcolor=T["border"], zerolinecolor=T["border"],
-                     tickfont_color=T["text_muted"])
-    fig.update_yaxes(gridcolor=T["border"], zerolinecolor=T["border"],
-                     tickfont_color=T["text_muted"])
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=8, b=8, l=8, r=8),
+        font_color=T["text2"],
+        font_family="Manrope",
+        # plotly defaults to 450px, which dominates the page next to the
+        # stat cards; this matches the dashboard card proportions.
+        height=300,
+        autosize=True,
+    )
+    fig.update_xaxes(
+        gridcolor=T["border"], zerolinecolor=T["border"], tickfont_color=T["text_muted"]
+    )
+    fig.update_yaxes(
+        gridcolor=T["border"], zerolinecolor=T["border"], tickfont_color=T["text_muted"]
+    )
     return fig
 
 
@@ -638,15 +718,21 @@ def month_figure(by_month: list[dict], theme: str = "Dark"):
     import plotly.graph_objects as go
 
     T = THEMES.get(theme, THEMES["Dark"])
-    fig = go.Figure(go.Bar(x=[m["month"] for m in by_month],
-                           y=[m["spend"] for m in by_month],
-                           marker_color=T["green"]))
+    fig = go.Figure(
+        go.Bar(
+            x=[m["month"] for m in by_month],
+            y=[m["spend"] for m in by_month],
+            marker_color=T["green"],
+        )
+    )
     fig.update_xaxes(type="category")
     # Plotly sizes a bar as a fraction of its category slot, and with a single month that
-    # slot is the entire plot -- the chart renders as one solid block. Cap the width so a
+    # slot is the entire plot - the chart renders as one solid block. Cap the width so a
     # one- or two-month dashboard still reads as a bar chart.
-    fig.update_traces(width=min(0.5, 0.18 * max(len(by_month), 1)),
-                      hovertemplate="%{x}: $%{y:,.2f}<extra></extra>")
+    fig.update_traces(
+        width=min(0.5, 0.18 * max(len(by_month), 1)),
+        hovertemplate="%{x}: $%{y:,.2f}<extra></extra>",
+    )
     return style_fig(fig, theme)
 
 
@@ -657,17 +743,31 @@ def category_figure(categories: list[dict], theme: str = "Dark"):
     priced = [c for c in categories if (c.get("total_spend") or 0) > 0]
     if not priced:
         return None
-    fig = go.Figure(go.Pie(
-        labels=[c["category"].title() for c in priced],
-        values=[c["total_spend"] for c in priced],
-        marker=dict(colors=[T["cats"].get(c["category"], T["cats"]["other"])
-                            for c in priced],
-                    line=dict(color=T["bg"], width=3)),
-        hole=0.62, sort=False))
-    fig.update_traces(textinfo="percent", textposition="outside",
-                      textfont_family="Manrope", textfont_color=T["text2"],
-                      hovertemplate="%{label}: $%{value:.2f} (%{percent})<extra></extra>")
-    fig.update_layout(showlegend=True,
-                      legend=dict(orientation="h", y=-0.05,
-                                  font=dict(color=T["text2"], family="Manrope")))
+    fig = go.Figure(
+        go.Pie(
+            labels=[c["category"].title() for c in priced],
+            values=[c["total_spend"] for c in priced],
+            marker=dict(
+                colors=[
+                    T["cats"].get(c["category"], T["cats"]["other"]) for c in priced
+                ],
+                line=dict(color=T["bg"], width=3),
+            ),
+            hole=0.62,
+            sort=False,
+        )
+    )
+    fig.update_traces(
+        textinfo="percent",
+        textposition="outside",
+        textfont_family="Manrope",
+        textfont_color=T["text2"],
+        hovertemplate="%{label}: $%{value:.2f} (%{percent})<extra></extra>",
+    )
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            orientation="h", y=-0.05, font=dict(color=T["text2"], family="Manrope")
+        ),
+    )
     return style_fig(fig, theme)

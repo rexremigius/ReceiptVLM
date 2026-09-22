@@ -1,30 +1,19 @@
 """Assembles the deployable Hugging Face Space from this repo.
 
-The repo is not itself a Space: Spaces want a `requirements.txt` and a README with SDK
-frontmatter at the root, and this repo's versions of both describe the MLX stack
-(transformers==4.49.0, `uvicorn`/`streamlit` run instructions). Rather than fork the
-project or break the on-device setup docs, this copies the subset a Space actually needs
-into a staging directory that can be pushed to the Space remote as its own history.
+Spaces want requirements.txt and a README with SDK frontmatter at the root, and
+this repo's versions of both describe the MLX stack. Rather than fork the project,
+this copies the subset a Space needs into a staging directory.
 
-What it deliberately leaves out:
-
-  * The MLX pipeline modules (train/prep/baseline/quantize/sweep/taxonomy/serve). Nothing
-    the Space does touches them and they would drag mlx and datasets into the image.
-  * The full WildReceipt dataset. Only the images for the receipts app.py actually offers
-    as samples are copied, which is a few MB rather than 179.
-  * checkpoints/final (the MLX adapter). The Space needs the converted peft adapter.
+Leaves out the MLX pipeline modules (which would drag mlx and datasets into the
+image), the full WildReceipt dataset, and checkpoints/final.
 
 Usage:
-    python scripts/convert_mlx_adapter_to_peft.py        # if not done yet
     python scripts/build_space.py --out build/space
-    cd build/space && git init && git add -A && git commit -m "ReceiptVLM Space"
-    git remote add origin https://huggingface.co/spaces/<user>/receiptvlm
-    git push -u origin main
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -37,9 +26,10 @@ from src import samples
 from src.pipeline import load_jsonl
 
 # Only what app.py's import graph reaches. zeroshot.py is included for its field/line-item
-# logprob span walkers (confidence.py's third signal) -- its mlx import is guarded, and it
+# logprob span walkers (confidence.py's third signal) - its mlx import is guarded, and it
 # no longer pulls in train.py now that the prompt lives in schema.py.
 SRC_MODULES = [
+    "backend.py",
     "backend_hf.py",
     "categorize.py",
     "confidence.py",
@@ -99,7 +89,7 @@ Fine-tuning beats zero-shot ~3.7x and the OCR baseline ~6.8x (paired bootstrap, 
 
 The adapter was trained on Apple Silicon through MLX against a 4-bit base, then converted
 to peft format for CUDA (`scripts/convert_mlx_adapter_to_peft.py` in the source repo).
-This Space runs it in fp16 on ZeroGPU -- the INT4 quantization in the original project was
+This Space runs it in fp16 on ZeroGPU - the INT4 quantization in the original project was
 a memory/latency tradeoff for on-device use, which a 48 GB GPU slice does not need.
 
 **Upload** a receipt photo to run the model, or pick one of the bundled **sample
@@ -108,7 +98,7 @@ aggregates only what you upload in your own session.
 
 Confidence dots combine token logprob, arithmetic consistency
 (`subtotal + tax + tip ~ total`) and format validity, Platt-calibrated on a held-out
-split. Grey means the model abstained rather than scored low -- hover any dot for the
+split. Grey means the model abstained rather than scored low - hover any dot for the
 number.
 """
 
@@ -122,8 +112,10 @@ def copy_samples(out: Path, max_samples: int) -> list[str]:
     image_root = REPO_ROOT / "data" / "wildreceipt"
     chosen = samples.pick(predictions, image_root, max_samples)
     if not chosen:
-        print("  WARNING: no sample images found under data/wildreceipt -- the Space "
-              "will offer no samples. Download WildReceipt first if you want them.")
+        print(
+            "  WARNING: no sample images found under data/wildreceipt - the Space "
+            "will offer no samples. Download WildReceipt first if you want them."
+        )
     for image_id in chosen:
         dest = out / "data" / "wildreceipt" / image_id
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -132,17 +124,25 @@ def copy_samples(out: Path, max_samples: int) -> list[str]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--out", type=Path, default=REPO_ROOT / "build" / "space")
-    ap.add_argument("--adapter", type=Path,
-                    default=REPO_ROOT / "checkpoints" / "final_peft",
-                    help="peft adapter to bundle")
+    ap.add_argument(
+        "--adapter",
+        type=Path,
+        default=REPO_ROOT / "checkpoints" / "final_peft",
+        help="peft adapter to bundle",
+    )
     ap.add_argument("--samples", type=int, default=samples.DEFAULT_MAX_SAMPLES)
-    ap.add_argument("--sdk-version", default="5.49.1",
-                    help="must match the gradio pin in requirements-spaces.txt")
-    ap.add_argument("--force", action="store_true",
-                    help="overwrite an existing output directory")
+    ap.add_argument(
+        "--sdk-version",
+        default="5.49.1",
+        help="must match the gradio pin in requirements-spaces.txt",
+    )
+    ap.add_argument(
+        "--force", action="store_true", help="overwrite an existing output directory"
+    )
     args = ap.parse_args()
 
     out = args.out
@@ -184,8 +184,7 @@ def main() -> None:
 
     chosen = copy_samples(out, args.samples)
 
-    (out / "README.md").write_text(
-        README_TEMPLATE.format(sdk_version=args.sdk_version))
+    (out / "README.md").write_text(README_TEMPLATE.format(sdk_version=args.sdk_version))
     (out / ".gitattributes").write_text(GITATTRIBUTES)
 
     total_bytes = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
@@ -196,10 +195,12 @@ def main() -> None:
     print(f"  adapter       {args.adapter.name}")
     print(f"  samples       {len(chosen)}")
     print(f"  total         {n_files} files, {total_bytes / 1e6:.1f} MB")
-    print("\nServing precision: fp16 (the default). Do NOT set RECEIPTVLM_LOAD_4BIT --\n"
-          "the re-trained adapter scores higher on fp16 than on the NF4 base it was\n"
-          "trained on (0.760 vs 0.722 micro-F1), and fp16 keeps bitsandbytes out of the\n"
-          "image, which ZeroGPU does not reliably support.")
+    print(
+        "\nServing precision: fp16 (the default). Do NOT set RECEIPTVLM_LOAD_4BIT --\n"
+        "the re-trained adapter scores higher on fp16 than on the NF4 base it was\n"
+        "trained on (0.760 vs 0.722 micro-F1), and fp16 keeps bitsandbytes out of the\n"
+        "image, which ZeroGPU does not reliably support."
+    )
     print(f"\nSanity-check it before pushing:\n  cd {out} && python app.py")
 
 

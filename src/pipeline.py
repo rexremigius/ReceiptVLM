@@ -1,22 +1,12 @@
 """Framework-free core shared by the FastAPI backend and the Gradio Space.
 
-serve.py grew this logic inline, which was fine while Streamlit-over-HTTP was the only
-front end. A Hugging Face Space runs a single process, so there is no uvicorn to call and
-the Gradio app needs the same confidence badges, spend aggregation and category rollups
-as plain function calls. Rather than fork them -- the calibrated confidence score is the
-project's headline result, so two drifting copies would be a genuine hazard -- they live
-here and serve.py imports them.
-
-Nothing in this module imports torch, mlx, fastapi or gradio, so it stays cheap to import
-from either stack. The actual model lives in backend_hf.py (transformers/CUDA) or behind
-mlx_vlm in serve.py.
-
-One deliberate difference from serve.py: the uploaded-receipt list is not a module global
-here. serve.py kept LIVE_RECEIPTS at module scope, which is correct for a single-user
-localhost demo but wrong on a public Space -- every visitor would pool into one dashboard
-and see each other's receipts. Callers own that list and pass it in, so the Gradio app can
-keep it in per-session state.
+Confidence badges, spend aggregation and category rollups, with no torch, mlx,
+fastapi or gradio import. Kept in one place because the calibrated confidence score
+is the headline result and two copies would drift. The uploaded-receipt list is the
+caller's, not a module global, so a public multi-user deployment cannot pool
+sessions.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,8 +27,13 @@ for _p in (str(_SRC_DIR.parent), str(_SRC_DIR)):
         sys.path.insert(0, _p)
 
 from src.confidence import (
-    apply_platt, arithmetic_consistency, line_item_consistency,
-    line_item_logprob_feature, line_item_raw_score, logprob_feature, raw_score,
+    apply_platt,
+    arithmetic_consistency,
+    line_item_consistency,
+    line_item_logprob_feature,
+    line_item_raw_score,
+    logprob_feature,
+    raw_score,
     run as run_confidence,
 )
 from src.categorize import infer_category
@@ -92,6 +87,7 @@ def load_jsonl(path: Path) -> dict[str, dict]:
 
 # --- confidence badges -------------------------------------------------------------
 
+
 def _band(score: float) -> dict:
     """Confidence badge for a score in [0, 1], with a level colour."""
 
@@ -121,14 +117,19 @@ def _missing_badge() -> dict:
 
 
 def _null_field_badge(field: str) -> dict:
-    return _missing_badge() if field in FIELDS_WHERE_NULL_IS_LIKELY_A_MISS else _na_badge()
+    return (
+        _missing_badge() if field in FIELDS_WHERE_NULL_IS_LIKELY_A_MISS else _na_badge()
+    )
 
 
 def _params_by_field(conf_results: dict) -> dict[str, np.ndarray]:
     """Platt calibration parameters per field, from a confidence sweep's results."""
 
-    return {f: np.array(r["calibration_weights"] + [r["calibration_bias"]])
-            for f, r in conf_results["fields"].items() if "calibration_weights" in r}
+    return {
+        f: np.array(r["calibration_weights"] + [r["calibration_bias"]])
+        for f, r in conf_results["fields"].items()
+        if "calibration_weights" in r
+    }
 
 
 class ConfidenceScorer:
@@ -149,8 +150,13 @@ class ConfidenceScorer:
     @property
     def platt(self) -> dict[str, np.ndarray]:
         if self._platt is None:
-            results = run_confidence(_CONF_TAG, "test", seed=self._seed,
-                                     calib_frac=self._calib_frac, quiet=True)
+            results = run_confidence(
+                _CONF_TAG,
+                "test",
+                seed=self._seed,
+                calib_frac=self._calib_frac,
+                quiet=True,
+            )
             self._platt = _params_by_field(results)
         return self._platt
 
@@ -161,15 +167,21 @@ class ConfidenceScorer:
 
         if self._platt_3sig is None:
             if (PROC_ROOT / f"{_CONF_TAG_LOGPROB}_test.jsonl").exists():
-                results = run_confidence(_CONF_TAG_LOGPROB, "test", seed=self._seed,
-                                         calib_frac=self._calib_frac, quiet=True)
+                results = run_confidence(
+                    _CONF_TAG_LOGPROB,
+                    "test",
+                    seed=self._seed,
+                    calib_frac=self._calib_frac,
+                    quiet=True,
+                )
                 self._platt_3sig = _params_by_field(results)
             else:
                 self._platt_3sig = {}
         return self._platt_3sig
 
-    def line_item_badges(self, record: dict, platt_params: dict,
-                         use_logprob: bool = False) -> dict:
+    def line_item_badges(
+        self, record: dict, platt_params: dict, use_logprob: bool = False
+    ) -> dict:
         """Per-item badges plus an aggregate for the whole line-items list.
 
         Falls back to the raw heuristic when no Platt calibration was fit for line items
@@ -180,9 +192,13 @@ class ConfidenceScorer:
         if not items:
             return {"aggregate": _missing_badge(), "items": []}
 
-        consistency = line_item_consistency(items, record.get("subtotal"),
-                                            record.get("total"), record.get("tax"),
-                                            record.get("tip"))
+        consistency = line_item_consistency(
+            items,
+            record.get("subtotal"),
+            record.get("total"),
+            record.get("tax"),
+            record.get("tip"),
+        )
         params = platt_params.get("line_items")
         item_badges, scored = [], []
         for idx, item in enumerate(items):
@@ -195,15 +211,20 @@ class ConfidenceScorer:
                 if heuristic is None and lp_feat is None:
                     item_badges.append(_unscored_badge())
                     continue
-                features = [heuristic if heuristic is not None else 0.5,
-                            lp_feat if lp_feat is not None else 0.5]
+                features = [
+                    heuristic if heuristic is not None else 0.5,
+                    lp_feat if lp_feat is not None else 0.5,
+                ]
             else:
                 if heuristic is None:
                     item_badges.append(_unscored_badge())
                     continue
                 features = [heuristic]
-            score = (float(apply_platt(np.array(features), params)[0])
-                     if params is not None else features[0])
+            score = (
+                float(apply_platt(np.array(features), params)[0])
+                if params is not None
+                else features[0]
+            )
             item_badges.append(_band(score))
             scored.append(score)
 
@@ -235,7 +256,7 @@ class ConfidenceScorer:
     def field_confidence_live(self, record: dict) -> dict[str, Any]:
         """3-signal badges (+ token logprob), for freshly inferred predictions.
 
-        Degrades to the 2-signal fit, then to the raw heuristic, per field -- `tip` is
+        Degrades to the 2-signal fit, then to the raw heuristic, per field - `tip` is
         typically too sparse to calibrate even in a bigger sample.
         """
 
@@ -257,13 +278,16 @@ class ConfidenceScorer:
                 score = heuristic
             out[field] = _band(score)
         if "line_items" in platt_3sig:
-            out["line_items"] = self.line_item_badges(record, platt_3sig, use_logprob=True)
+            out["line_items"] = self.line_item_badges(
+                record, platt_3sig, use_logprob=True
+            )
         else:
             out["line_items"] = self.line_item_badges(record, platt)
         return out
 
 
 # --- spend aggregation -------------------------------------------------------------
+
 
 def aggregate_spend(records: list[dict]) -> dict:
     """Store/month totals from a list of prediction dicts."""
@@ -292,10 +316,12 @@ def aggregate_spend(records: list[dict]) -> dict:
         "n_receipts": len(records),
         "n_priced": n_priced,
         "total_spend": round(total_spend, 2),
-        "by_store": [{"store": by_store_label[k], "spend": round(v, 2)}
-                     for k, v in top_stores],
-        "by_month": [{"month": k, "spend": round(v, 2)}
-                     for k, v in sorted(by_month.items())],
+        "by_store": [
+            {"store": by_store_label[k], "spend": round(v, 2)} for k, v in top_stores
+        ],
+        "by_month": [
+            {"month": k, "spend": round(v, 2)} for k, v in sorted(by_month.items())
+        ],
     }
 
 
@@ -310,10 +336,14 @@ def dashboard_payload(live_receipts: list[dict]) -> dict:
 
     agg = aggregate_spend([r["prediction"] for r in live_receipts])
     agg["recent"] = [
-        {"timestamp": r["timestamp"], "filename": r["filename"],
-         "store": r["prediction"].get("store"), "date": r["prediction"].get("date"),
-         "total": r["prediction"].get("total"),
-         "category": infer_category(r["prediction"])}
+        {
+            "timestamp": r["timestamp"],
+            "filename": r["filename"],
+            "store": r["prediction"].get("store"),
+            "date": r["prediction"].get("date"),
+            "total": r["prediction"].get("total"),
+            "category": infer_category(r["prediction"]),
+        }
         for r in reversed(live_receipts[-20:])
     ]
     agg["caveat"] = "predicted totals, not manually verified"
@@ -325,7 +355,8 @@ def categories_payload(live_receipts: list[dict]) -> dict:
 
     records = [r["prediction"] for r in live_receipts]
     buckets: dict[str, dict] = defaultdict(
-        lambda: {"count": 0, "spend": 0.0, "n_priced": 0})
+        lambda: {"count": 0, "spend": 0.0, "n_priced": 0}
+    )
     for rec in records:
         b = buckets[infer_category(rec)]
         b["count"] += 1
@@ -334,18 +365,25 @@ def categories_payload(live_receipts: list[dict]) -> dict:
             b["spend"] += total
             b["n_priced"] += 1
 
-    ordered = ([c for c in CATEGORY_ORDER if c in buckets]
-               + [c for c in buckets if c not in CATEGORY_ORDER])
+    ordered = [c for c in CATEGORY_ORDER if c in buckets] + [
+        c for c in buckets if c not in CATEGORY_ORDER
+    ]
     out = []
     for cat in ordered:
         b = buckets[cat]
-        out.append({
-            "category": cat,
-            "count": b["count"],
-            "share": round(100 * b["count"] / max(len(records), 1), 1),
-            "total_spend": round(b["spend"], 2),
-            "avg_total": round(b["spend"] / b["n_priced"], 2) if b["n_priced"] else None,
-        })
-    return {"n_receipts": len(records),
-            "basis": "uploaded receipts this session; heuristic categories",
-            "categories": out}
+        out.append(
+            {
+                "category": cat,
+                "count": b["count"],
+                "share": round(100 * b["count"] / max(len(records), 1), 1),
+                "total_spend": round(b["spend"], 2),
+                "avg_total": (
+                    round(b["spend"] / b["n_priced"], 2) if b["n_priced"] else None
+                ),
+            }
+        )
+    return {
+        "n_receipts": len(records),
+        "basis": "uploaded receipts this session; heuristic categories",
+        "categories": out,
+    }

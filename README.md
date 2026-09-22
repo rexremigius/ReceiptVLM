@@ -107,7 +107,7 @@ reports which one is active.
 Both measured over the same 60 test receipts with `scripts/benchmark_local.py`; see
 RESULTS.md §5 for percentiles, the per-instrument memory caveats, and why these MLX
 timings run faster than §3's. `src/serve.py` prefers MLX because it is 1.9× faster and uses
-about 60% of the memory, and falls back to `src/backend_hf.py` anywhere else — so the
+about 60% of the memory, and falls back to `src/backend_hf.py` anywhere else - so the
 Streamlit stack now works on a Linux GPU box, not only on Apple Silicon. If neither is
 available the API still serves cached predictions and `/infer` returns 503.
 
@@ -168,7 +168,7 @@ the project's own `eval.py`:
 
 | adapter / serving | micro-F1 | vs. MLX run |
 |---|---|---|
-| MLX + QLoRA (on-device reference) | 0.785 | — |
+| MLX + QLoRA (on-device reference) | 0.785 | - |
 | **re-trained, served fp16** | **0.760** [0.691, 0.830] | −0.025, p=0.542 |
 | re-trained, served NF4 | 0.722 [0.636, 0.815] | −0.063, p=0.242 |
 | original adapter converted to fp16 | 0.288 | −0.497, p≈0 |
@@ -179,7 +179,7 @@ Per field, fp16 serving matches the MLX run on `store` (0.900), `tax` (0.905) an
 
 Two results worth keeping:
 
-**Serve it in fp16, not NF4** — even though it was trained with QLoRA on an NF4 base.
+**Serve it in fp16, not NF4** - even though it was trained with QLoRA on an NF4 base.
 fp16 scores +0.038 higher, because NF4 is a close enough approximation that the adapter's
 learned corrections still apply while the base weights themselves are more accurate. This
 also removes bitsandbytes from the deployment entirely, which matters because HF ZeroGPU
@@ -202,12 +202,12 @@ The port itself was not the problem; four measurements ruled that out:
 |---|---|
 | conversion algebra (`verify_adapter_equivalence.py`) | exact to 1.5e-8 |
 | base model through the same harness (`--no-adapter`) | 0.218, reproducing the published zero-shot 0.212 |
-| LoRA scale | 0.125 both sides — mlx_vlm reads `alpha` from the saved config |
+| LoRA scale | 0.125 both sides - mlx_vlm reads `alpha` from the saved config |
 | update magnitude `‖ΔW‖/‖W‖` | median 1.09e-2, normal for a working LoRA |
 
 The cause is the base model. The adapter was fit by QLoRA to correct
 `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`; against fp16 weights its ~1% perturbation
-points elsewhere. The predictions show it plainly — the model still *reads* the receipt
+points elsewhere. The predictions show it plainly - the model still *reads* the receipt
 but reverts to the base model's conventions instead of the fine-tune's
 (`CHO EUN KOREAN RESTAUR` where the WildReceipt target is `CHOEUN KOREANRESTAURAN`,
 `24,65` for `24.65`, unit price where the target is the extended price). Large numerals
@@ -219,20 +219,20 @@ line items collapse (0.30 / 0.53 / 0.19) because they do.
 ### Re-training the adapter
 
 [`notebooks/kaggle_retrain_qlora.ipynb`](notebooks/kaggle_retrain_qlora.ipynb) re-fits the
-adapter with `transformers` + `peft`, mirroring `src/train.py`'s run exactly — rank 4,
+adapter with `transformers` + `peft`, mirroring `src/train.py`'s run exactly - rank 4,
 alpha 0.5 (scale 0.125), lr 1e-4, Adam (not AdamW), element-wise gradient clipping at 1.0,
 NaN/Inf steps skipped, batch size 1, the same `Random(0)` split (1140 train / 127 val →
 2280 steps), 768×1024 aspect-preserving sizing, and completion-only loss. The only
 deliberate changes are the framework and the base.
 
-It trains in **NF4** — not for memory but because a 16 GB T4 cannot hold the fp16 base
+It trains in **NF4** - not for memory but because a 16 GB T4 cannot hold the fp16 base
 plus activations. Serving, though, is best done in **fp16**: measured at +0.038 micro-F1
 over NF4 serving (0.760 vs 0.722), and it keeps bitsandbytes out of the deployment. Free on Kaggle
 (~30 GPU-hours/week, phone verification required for both GPU and internet); the run is
-~2–4 hours, so use **Save & Run All (Commit)** so it survives closing the tab.
+~2-4 hours, so use **Save & Run All (Commit)** so it survives closing the tab.
 
 Pick **GPU T4 x2**, not the P100. Kaggle's P100 is Pascal (`sm_60`) and current PyTorch
-wheels and bitsandbytes builds ship no kernels for it — the model load fails with
+wheels and bitsandbytes builds ship no kernels for it - the model load fails with
 `CUDA error: no kernel image is available for execution on the device` after downloading
 7 GB. The notebook's first cell checks the device's compute capability against
 `torch.cuda.get_arch_list()` and stops immediately if it won't work. It also pins torch to
@@ -250,12 +250,12 @@ data/processed/finetuned_test.jsonl  # MLX reference, for the paired test
 src/eval.py src/repair.py src/schema.py src/zeroshot.py
 ```
 
-Folder layout inside the dataset doesn't matter — the notebook searches any depth — with
+Folder layout inside the dataset doesn't matter - the notebook searches any depth - with
 one constraint: the four `.py` files must sit **in the same folder as each other**, since
 they import by bare name. If the scoring files are absent the gate skips with
 instructions rather than failing a good training run.
 
-Drop the resulting `final_peft/` into `checkpoints/final_peft` and serve it as-is — fp16
+Drop the resulting `final_peft/` into `checkpoints/final_peft` and serve it as-is - fp16
 is the default, so no environment variable is needed:
 
 ```bash
@@ -265,11 +265,11 @@ python app.py                            # fp16, the measured-best serving path
 [`notebooks/kaggle_eval_adapter.ipynb`](notebooks/kaggle_eval_adapter.ipynb) scores any
 saved adapter without training (~15 min), with a `LOAD_4BIT` switch to compare the two
 serving precisions. That is how the fp16-vs-NF4 result above was measured. `--load-4bit`
-on `scripts/validate_peft_adapter.py` does the same locally, but needs CUDA — bitsandbytes
+on `scripts/validate_peft_adapter.py` does the same locally, but needs CUDA - bitsandbytes
 has no MPS backend, so an NF4 comparison cannot run on Apple Silicon.
 
-The alternative — **dequantizing the MLX 4-bit checkpoint into HF format** so the original
-adapter meets the weights it was fit to — would avoid retraining, but needs an MLX→HF key
+The alternative - **dequantizing the MLX 4-bit checkpoint into HF format** so the original
+adapter meets the weights it was fit to - would avoid retraining, but needs an MLX→HF key
 remap plus per-group dequantization and is unproven here.
 
 Two behaviour differences from the local app, both required by a public multi-user URL:

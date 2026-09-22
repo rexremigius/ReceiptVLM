@@ -1,15 +1,9 @@
-"""Streamlit front end for the on-device demo, talking to src/serve.py over HTTP.
+"""Streamlit front end for the on-device demo, talking to serve.py over HTTP.
 
-This is the Apple-Silicon path: the FastAPI backend holds the MLX model, so both
-processes run locally. The hosted Space uses app.py (Gradio) instead, since a Space is a
-single process and ZeroGPU is Gradio-only.
-
-Palette and markup come from src/render.py, shared with the Gradio app so the two UIs
-cannot drift apart on colours or the field table. What stays here is the part that is
-genuinely Streamlit-specific: the widget-chrome CSS (data-testid="stTabs",
-data-baseweb=... and friends, which mean nothing in Gradio) and the rerun-driven control
-flow.
+Shares src/render.py and src/pipeline.py with the Gradio Space, so both UIs render
+identical badges and totals. RECEIPTVLM_API_BASE points it at a non-local backend.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -64,7 +58,7 @@ div[data-testid="stAlertContainer"] { background: var(--surface) !important; bor
 div[data-testid="stAlertContainer"] p { color: var(--text-secondary) !important; font-size: 0.9rem; }
 div[data-testid="stAlertContainer"] svg { fill: var(--green) !important; }
 
-/* tab spacing via flex gap — reliable whether the tab is a div or a button */
+/* tab spacing via flex gap - reliable whether the tab is a div or a button */
 [data-testid="stTabs"] [role="tablist"] { border-bottom: 1px solid var(--border); gap: 2.75rem !important; }
 div[data-testid="stTab"], button[data-baseweb="tab"] { padding: 0.35rem 0.2rem 0.7rem !important; margin-right: 0 !important; }
 div[data-testid="stTab"] p { font-size: 0.95rem !important; font-weight: 600; color: var(--text-muted); }
@@ -127,8 +121,9 @@ def fetch_receipts():
 
 
 def fetch_receipt(image_id: str, include_gt: bool):
-    r = requests.get(f"{API_BASE}/receipts/{image_id}", params={"include_gt": include_gt},
-                     timeout=10)
+    r = requests.get(
+        f"{API_BASE}/receipts/{image_id}", params={"include_gt": include_gt}, timeout=10
+    )
     r.raise_for_status()
     return r.json()
 
@@ -136,8 +131,9 @@ def fetch_receipt(image_id: str, include_gt: bool):
 def fetch_infer(image_bytes: bytes, filename: str):
     # NOT cached: /infer appends to the backend's Overview list, and a cache hit would skip
     # that append. Rerun de-dup is handled by the caller via a per-file hash in session_state.
-    r = requests.post(f"{API_BASE}/infer", files={"file": (filename, image_bytes)},
-                      timeout=120)
+    r = requests.post(
+        f"{API_BASE}/infer", files={"file": (filename, image_bytes)}, timeout=120
+    )
     r.raise_for_status()
     return r.json()
 
@@ -155,15 +151,23 @@ def fetch_categories():
 
 
 def render_receipt_tab(theme: str):
-    source = st.radio("Source", ["Upload", "Sample receipts"],
-                      horizontal=True, key="imgsrc", label_visibility="collapsed")
+    source = st.radio(
+        "Source",
+        ["Upload", "Sample receipts"],
+        horizontal=True,
+        key="imgsrc",
+        label_visibility="collapsed",
+    )
 
     image_bytes, image_name, image_id = None, "upload.jpg", None
     if source == "Upload":
         st.caption("Drag & drop a receipt photo here, or browse your files.")
-        uploaded = st.file_uploader("Choose a photo",
-                                    type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
-                                    key="upload_widget", label_visibility="collapsed")
+        uploaded = st.file_uploader(
+            "Choose a photo",
+            type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
+            key="upload_widget",
+            label_visibility="collapsed",
+        )
         if uploaded is not None:
             image_bytes, image_name = uploaded.getvalue(), uploaded.name
     else:
@@ -205,7 +209,9 @@ def render_receipt_tab(theme: str):
         elif image_bytes:
             # analyze once per unique file: reruns reuse the stored result, no duplicate append
             h = hashlib.md5(image_bytes).hexdigest()
-            if st.session_state.get("infer_hash") == h and st.session_state.get("infer_result"):
+            if st.session_state.get("infer_hash") == h and st.session_state.get(
+                "infer_result"
+            ):
                 detail = st.session_state["infer_result"]
             else:
                 with st.spinner("Analyzing receipt…"):
@@ -225,10 +231,12 @@ def render_receipt_tab(theme: str):
                     prediction,
                     confidence=detail.get("confidence"),
                     ground_truth=detail.get("ground_truth"),
-                    category=infer_category({
-                        "store": prediction.get("store") or "",
-                        "line_items": prediction.get("line_items"),
-                    }),
+                    category=infer_category(
+                        {
+                            "store": prediction.get("store") or "",
+                            "line_items": prediction.get("line_items"),
+                        }
+                    ),
                     theme=theme,
                     format_item_name=format_item_name,
                 ),
@@ -255,43 +263,68 @@ def render_dashboard_tab(theme: str):
 
     # Hero + stat cards, shared with the Gradio app. Recent transactions are rendered
     # separately below so the charts can sit between them, as before.
-    st.markdown(render.overview_blocks({**dash, "recent": [], "caveat": None}, cats,
-                                       theme=theme, infer_category=infer_category),
-                unsafe_allow_html=True)
+    st.markdown(
+        render.overview_blocks(
+            {**dash, "recent": [], "caveat": None},
+            cats,
+            theme=theme,
+            infer_category=infer_category,
+        ),
+        unsafe_allow_html=True,
+    )
 
     if dash.get("by_month"):
-        st.markdown('<div class="section-title">Spending by month</div>',
-                    unsafe_allow_html=True)
-        st.plotly_chart(render.month_figure(dash["by_month"], theme),
-                        use_container_width=True)
+        st.markdown(
+            '<div class="section-title">Spending by month</div>', unsafe_allow_html=True
+        )
+        st.plotly_chart(
+            render.month_figure(dash["by_month"], theme), use_container_width=True
+        )
 
     if cats:
         fig = render.category_figure(cats["categories"], theme)
         if fig is not None:
-            st.markdown('<div class="section-title">Spending by category</div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-title">Spending by category</div>',
+                unsafe_allow_html=True,
+            )
             st.plotly_chart(fig, use_container_width=True)
 
     if dash.get("recent"):
-        st.markdown('<div class="section-title">Recent transactions</div>',
-                    unsafe_allow_html=True)
-        st.markdown(render.transactions_panel(dash["recent"], theme=theme,
-                                              infer_category=infer_category),
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">Recent transactions</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            render.transactions_panel(
+                dash["recent"], theme=theme, infer_category=infer_category
+            ),
+            unsafe_allow_html=True,
+        )
         if dash.get("caveat"):
-            st.markdown(f'<div class="section-sub" style="margin-top:0.8rem;">'
-                        f'{dash["caveat"]}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="section-sub" style="margin-top:0.8rem;">'
+                f'{dash["caveat"]}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 c_brand, c_theme = st.columns([3, 1.1], gap="small", vertical_alignment="center")
 with c_theme:
-    mode = st.radio("Theme", ["Dark", "Light"], horizontal=True, key="theme",
-                    label_visibility="collapsed")
+    mode = st.radio(
+        "Theme",
+        ["Dark", "Light"],
+        horizontal=True,
+        key="theme",
+        label_visibility="collapsed",
+    )
 inject_css(mode)
 with c_brand:
-    st.markdown('<p class="brand-mark">Receipt<span class="dot">VLM</span></p>'
-                '<p class="brand-tag">Track every dollar, straight from your receipts.</p>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<p class="brand-mark">Receipt<span class="dot">VLM</span></p>'
+        '<p class="brand-tag">Track every dollar, straight from your receipts.</p>',
+        unsafe_allow_html=True,
+    )
 
 tab1, tab2 = st.tabs(["Receipts", "Overview"])
 with tab1:

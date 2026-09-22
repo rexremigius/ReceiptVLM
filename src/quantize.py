@@ -4,6 +4,7 @@ precision tier runs in its own subprocess, since mlx's peak-memory tracking is
 process-global and would otherwise contaminate later tiers' numbers. Produces a
 summary JSON plus a comparison figure.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from schema import DEFAULT_MODEL, PROMPT, SCHEMA_KEYS
+from schema import PROMPT, SCHEMA_KEYS
 from repair import repair_json
 from zeroshot import normalize, load_image_ids
 import eval as ev
@@ -37,15 +38,17 @@ SCALAR_KEYS = [k for k in SCHEMA_KEYS if k != "line_items"]
 
 def _peak_memory_gb() -> float:
     import mlx.core as mx
+
     # mx.metal.get_peak_memory() is deprecated in favor of mx.get_peak_memory() as of
-    # mlx 0.29 (seen in this project's own generation logs) — support both since the
+    # mlx 0.29 (seen in this project's own generation logs) - support both since the
     # exact cutover version isn't pinned in requirements.txt.
     fn = getattr(mx, "get_peak_memory", None) or mx.metal.get_peak_memory
     return fn() / 1e9
 
 
-def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
-                 max_tokens: int) -> dict:
+def run_one_tier(
+    tier: str, image_ids: list[str], resize_shape: tuple[int, int], max_tokens: int
+) -> dict:
     """Run inference on a single precision tier, saving predictions and metadata."""
 
     from mlx_vlm import generate, load
@@ -54,13 +57,24 @@ def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
     repo_id = PRECISIONS[tier]
     print(f"=== {tier} ({repo_id}) ===", flush=True)
     try:
-        model, processor = load(repo_id, adapter_path=str(ADAPTER_PATH),
-                                processor_config={"trust_remote_code": True})
-    except Exception as e:  # a load/allocation failure is the "doesn't fit" finding to surface
-        meta = {"tier": tier, "repo_id": repo_id, "fit": False,
-                "error": f"{type(e).__name__}: {e}"}
+        model, processor = load(
+            repo_id,
+            adapter_path=str(ADAPTER_PATH),
+            processor_config={"trust_remote_code": True},
+        )
+    except (
+        Exception
+    ) as e:  # a load/allocation failure is the "doesn't fit" finding to surface
+        meta = {
+            "tier": tier,
+            "repo_id": repo_id,
+            "fit": False,
+            "error": f"{type(e).__name__}: {e}",
+        }
         print(f"  {tier} did not fit / failed to load: {meta['error']}")
-        (OUT_ROOT / f"_quantize_{tier}_meta.json").write_text(json.dumps(meta, indent=2))
+        (OUT_ROOT / f"_quantize_{tier}_meta.json").write_text(
+            json.dumps(meta, indent=2)
+        )
         return meta
 
     config = model.config.__dict__
@@ -69,9 +83,16 @@ def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
     records, latencies = [], []
     for i, image_id in enumerate(image_ids):
         t0 = time.time()
-        raw = generate(model, processor, prompt, image=str(DATA_ROOT / image_id),
-                       max_tokens=max_tokens, temperature=0.0, resize_shape=resize_shape,
-                       verbose=False)
+        raw = generate(
+            model,
+            processor,
+            prompt,
+            image=str(DATA_ROOT / image_id),
+            max_tokens=max_tokens,
+            temperature=0.0,
+            resize_shape=resize_shape,
+            verbose=False,
+        )
         latencies.append(time.time() - t0)
         parsed, _ = repair_json(raw)
         records.append({"image_id": image_id, **normalize(parsed)})
@@ -84,14 +105,20 @@ def run_one_tier(tier: str, image_ids: list[str], resize_shape: tuple[int, int],
             f.write(json.dumps(rec) + "\n")
 
     meta = {
-        "tier": tier, "repo_id": repo_id, "fit": True,
+        "tier": tier,
+        "repo_id": repo_id,
+        "fit": True,
         "n_receipts": len(records),
-        "avg_latency_s": round(sum(latencies) / len(latencies), 2) if latencies else None,
+        "avg_latency_s": (
+            round(sum(latencies) / len(latencies), 2) if latencies else None
+        ),
         "peak_memory_gb": round(_peak_memory_gb(), 2),
     }
     (OUT_ROOT / f"_quantize_{tier}_meta.json").write_text(json.dumps(meta, indent=2))
-    print(f"  -> {pred_path.name}  (avg {meta['avg_latency_s']}s/receipt, "
-          f"peak {meta['peak_memory_gb']}GB)")
+    print(
+        f"  -> {pred_path.name}  (avg {meta['avg_latency_s']}s/receipt, "
+        f"peak {meta['peak_memory_gb']}GB)"
+    )
     return meta
 
 
@@ -127,7 +154,9 @@ def report(limit: int, split: str):
     for f in field_order:
         row = f.ljust(18)
         for t in TIER_ORDER:
-            row += (f"{f1_table[t][f]:.3f}".ljust(10) if t in f1_table else "n/a".ljust(10))
+            row += (
+                f"{f1_table[t][f]:.3f}".ljust(10) if t in f1_table else "n/a".ljust(10)
+            )
         print(row)
     print()
     for t in TIER_ORDER:
@@ -135,11 +164,13 @@ def report(limit: int, split: str):
         if m is None:
             print(f"{t}: not run")
         elif not m["fit"]:
-            print(f"{t}: DID NOT FIT — {m['error']}")
+            print(f"{t}: DID NOT FIT - {m['error']}")
         else:
-            print(f"{t}: micro-F1={m['micro_f1']} 95%CI={m['micro_f1_ci95']}  "
-                  f"avg_latency={m['avg_latency_s']}s/receipt  "
-                  f"peak_memory={m['peak_memory_gb']}GB")
+            print(
+                f"{t}: micro-F1={m['micro_f1']} 95%CI={m['micro_f1_ci95']}  "
+                f"avg_latency={m['avg_latency_s']}s/receipt  "
+                f"peak_memory={m['peak_memory_gb']}GB"
+            )
 
     tiers_present = [t for t in TIER_ORDER if t in preds_by_tier]
     if len(tiers_present) > 1:
@@ -147,18 +178,24 @@ def report(limit: int, split: str):
         for i in range(len(tiers_present)):
             for j in range(i + 1, len(tiers_present)):
                 a, b = tiers_present[i], tiers_present[j]
-                test = ev.paired_bootstrap_test(gold, preds_by_tier[a], preds_by_tier[b])
+                test = ev.paired_bootstrap_test(
+                    gold, preds_by_tier[a], preds_by_tier[b]
+                )
                 sig = "significant" if test["p_approx"] < 0.05 else "NOT significant"
-                print(f"  {b} vs {a}: delta={test['mean_diff']:+.3f}  "
-                      f"95% CI [{test['ci'][0]:+.3f}, {test['ci'][1]:+.3f}]  "
-                      f"p~={test['p_approx']:.3f} ({sig})")
+                print(
+                    f"  {b} vs {a}: delta={test['mean_diff']:+.3f}  "
+                    f"95% CI [{test['ci'][0]:+.3f}, {test['ci'][1]:+.3f}]  "
+                    f"p~={test['p_approx']:.3f} ({sig})"
+                )
                 metas.setdefault("_significance", {})[f"{b}_vs_{a}"] = test
 
     fp16_meta = metas.get("FP16")
     if fp16_meta is not None and not fp16_meta["fit"]:
-        print("\nFINDING: FP16 does not fit standalone on this hardware — INT8 is "
-              "the real ceiling for on-device serving, not a compression choice "
-              "made for speed alone.")
+        print(
+            "\nFINDING: FP16 does not fit standalone on this hardware - INT8 is "
+            "the real ceiling for on-device serving, not a compression choice "
+            "made for speed alone."
+        )
 
     # --- precision x field figure, side by side, its own labeled plot --------------
     if f1_table:
@@ -172,13 +209,20 @@ def report(limit: int, split: str):
             if t not in f1_table:
                 continue
             offsets = [xi + (i - (n_tiers - 1) / 2) * bar_w for xi in x]
-            ax.bar(offsets, [f1_table[t][f] for f in field_order], width=bar_w,
-                  label=t, color=colors[t])
+            ax.bar(
+                offsets,
+                [f1_table[t][f] for f in field_order],
+                width=bar_w,
+                label=t,
+                color=colors[t],
+            )
         ax.set_xticks(list(x))
         ax.set_xticklabels(field_order, rotation=30, ha="right")
         ax.set_ylabel("F1")
         ax.set_ylim(0, 1)
-        ax.set_title(f"Quantization sweep: F1 by precision level x field (n={limit} receipts)")
+        ax.set_title(
+            f"Quantization sweep: F1 by precision level x field (n={limit} receipts)"
+        )
         ax.legend(title="Precision")
         ax.set_facecolor("#fcfcfb")
         fig.patch.set_facecolor("#fcfcfb")
@@ -190,22 +234,33 @@ def report(limit: int, split: str):
         print(f"\n-> {fig_path.name}")
 
     summary_path = OUT_ROOT / "_quantize_summary.json"
-    summary_path.write_text(json.dumps(
-        {"limit": limit, "split": split, "tiers": metas, "f1_by_field": f1_table}, indent=2))
+    summary_path.write_text(
+        json.dumps(
+            {"limit": limit, "split": split, "tiers": metas, "f1_by_field": f1_table},
+            indent=2,
+        )
+    )
     print(f"-> {summary_path.name}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", choices=[*PRECISIONS, "all"], default="all")
-    ap.add_argument("--limit", type=int, default=60,
-                    help="receipts per tier (a full 472 x 3 tiers is ~5 hours)")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=60,
+        help="receipts per tier (a full 472 x 3 tiers is ~5 hours)",
+    )
     ap.add_argument("--split", default="test")
     ap.add_argument("--max-tokens", type=int, default=1536)
     ap.add_argument("--image-resize", type=int, nargs=2, default=[768, 1024])
-    ap.add_argument("--report-only", action="store_true",
-                    help="rebuild the report/figure from existing quant_*_test.jsonl "
-                         "predictions without re-running generation")
+    ap.add_argument(
+        "--report-only",
+        action="store_true",
+        help="rebuild the report/figure from existing quant_*_test.jsonl "
+        "predictions without re-running generation",
+    )
     args = ap.parse_args()
 
     if args.report_only:
@@ -214,14 +269,29 @@ def main():
 
     if args.tier == "all":
         for tier in TIER_ORDER:
-            print(f"\n########## {tier}: launching in a fresh process "
-                  f"(clean peak-memory reading) ##########", flush=True)
-            subprocess.run([
-                sys.executable, str(THIS_FILE), "--tier", tier,
-                "--limit", str(args.limit), "--split", args.split,
-                "--max-tokens", str(args.max_tokens),
-                "--image-resize", str(args.image_resize[0]), str(args.image_resize[1]),
-            ], check=False)
+            print(
+                f"\n########## {tier}: launching in a fresh process "
+                f"(clean peak-memory reading) ##########",
+                flush=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(THIS_FILE),
+                    "--tier",
+                    tier,
+                    "--limit",
+                    str(args.limit),
+                    "--split",
+                    args.split,
+                    "--max-tokens",
+                    str(args.max_tokens),
+                    "--image-resize",
+                    str(args.image_resize[0]),
+                    str(args.image_resize[1]),
+                ],
+                check=False,
+            )
         report(args.limit, args.split)
         return
 

@@ -1,38 +1,18 @@
 """Latency and peak-memory benchmark for the Apple-Silicon backends.
 
-The companion to notebooks/kaggle_benchmark_cuda.ipynb, which covers the CUDA half. Same
-receipt prefix, same warm-up handling and the same statistics, so the two produce one
-comparable table instead of numbers measured four different ways.
+Companion to notebooks/kaggle_benchmark_cuda.ipynb, using the same receipt prefix
+and warm-up handling so the two produce one comparable table. Subsets nest: the
+first 30 are a subset of the first 60.
 
-Covers every backend reachable on this machine:
-
-    mlx-int4 / mlx-int8 / mlx-fp16   mlx_vlm on Metal, using checkpoints/final
-    mps                              transformers on Metal, using checkpoints/final_peft
-    cpu                              transformers on CPU (fp32), using checkpoints/final_peft
-
-Two things this deliberately does NOT pretend:
-
-  * **The MLX and transformers rows use different adapters.** They have to -- an adapter
-    only works against the base it was fit to, which is the whole subject of
-    scripts/validate_peft_adapter.py. So a row-to-row gap is backend *and* adapter, not
-    hardware alone.
-  * **Peak memory is not one instrument.** MLX exposes mx.get_peak_memory() (an allocator
-    tensor peak). torch on MPS has no equivalent max-allocated counter in every version,
-    so current-allocated is sampled per receipt and the maximum kept. CPU has no allocator
-    counter at all, so only process RSS is available. Every row therefore reports peak
-    process RSS as the one metric measured identically everywhere, alongside whatever
-    allocator figure the backend offers.
-
-Why the sample is a prefix: zeroshot.load_image_ids takes records[:limit] from test.jsonl
-in file order, so subsets nest. The first 30 are a strict subset of the first 60, which is
-what makes these numbers comparable to both the 60-receipt quantize.py run and the
-30-receipt accuracy gate.
+Each backend runs in its own process, because getrusage reports a process-lifetime
+high-water mark that cannot be reset. MLX rows use checkpoints/final and
+transformers rows checkpoints/final_peft, so a row-to-row gap is backend and
+adapter, not hardware alone.
 
 Usage:
-    python scripts/benchmark_local.py                          # mlx-int4 + mps, n=60
     python scripts/benchmark_local.py --backends all --limit 60
-    python scripts/benchmark_local.py --backends mps,cpu --limit 30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -75,12 +55,14 @@ REFERENCE = [
 
 
 # Rough resident footprint per backend, from measurements in this project. Used only to
-# refuse a run that would page the model out to disk -- a swapped benchmark reports disk
+# refuse a run that would page the model out to disk - a swapped benchmark reports disk
 # latency, not backend latency, and does it slowly enough to look like a hang.
 EXPECTED_GB = {
-    "mlx-int4": 4.4, "mlx-int8": 5.4, "mlx-fp16": 8.8,
-    "mps": 10.0,     # fp16 weights + vision activations
-    "cpu": 17.0,     # fp32 weights, the heaviest configuration by far
+    "mlx-int4": 4.4,
+    "mlx-int8": 5.4,
+    "mlx-fp16": 8.8,
+    "mps": 10.0,  # fp16 weights + vision activations
+    "cpu": 17.0,  # fp32 weights, the heaviest configuration by far
 }
 
 
@@ -117,9 +99,11 @@ def check_headroom(name: str, skip: bool) -> None:
         return
     print(f"  memory: need ~{need:.1f} GB, ~{have:.1f} GB available")
     if have < need * 1.15:
-        msg = (f"{name} needs ~{need:.1f} GB but only ~{have:.1f} GB is available. "
-               "Close some applications, or pass --skip-memory-check to run anyway. "
-               "Benchmarking while swapping measures disk, not the backend.")
+        msg = (
+            f"{name} needs ~{need:.1f} GB but only ~{have:.1f} GB is available. "
+            "Close some applications, or pass --skip-memory-check to run anyway. "
+            "Benchmarking while swapping measures disk, not the backend."
+        )
         if skip:
             print(f"  WARNING: {msg}")
         else:
@@ -160,6 +144,7 @@ def aggregate(values: list[float]) -> dict:
 
 # --- backends ----------------------------------------------------------------------
 
+
 def run_mlx(tier: str, image_ids: list[str]) -> dict:
     """Time the mlx_vlm stack on one precision tier."""
 
@@ -173,15 +158,25 @@ def run_mlx(tier: str, image_ids: list[str]) -> dict:
         raise SystemExit(f"Missing {MLX_ADAPTER} (the MLX adapter) for {tier}.")
 
     t0 = time.time()
-    model, processor = load(repo_id, adapter_path=str(MLX_ADAPTER),
-                            processor_config={"trust_remote_code": True})
+    model, processor = load(
+        repo_id,
+        adapter_path=str(MLX_ADAPTER),
+        processor_config={"trust_remote_code": True},
+    )
     prompt = apply_chat_template(processor, model.config.__dict__, PROMPT, num_images=1)
     load_s = time.time() - t0
 
     def one(image_id: str) -> str:
-        return generate(model, processor, prompt,
-                        image=str(DATA_ROOT / image_id), max_tokens=MAX_NEW_TOKENS,
-                        temperature=0.0, resize_shape=IMAGE_RESIZE, verbose=False)
+        return generate(
+            model,
+            processor,
+            prompt,
+            image=str(DATA_ROOT / image_id),
+            max_tokens=MAX_NEW_TOKENS,
+            temperature=0.0,
+            resize_shape=IMAGE_RESIZE,
+            verbose=False,
+        )
 
     # Warm-up excluded: the first call pays for lazy kernel compilation.
     t = time.time()
@@ -199,8 +194,10 @@ def run_mlx(tier: str, image_ids: list[str]) -> dict:
         latencies.append(time.time() - t)
         chars.append(len(raw))
         if i % 10 == 0:
-            print(f"    {i}/{len(image_ids)}  mean {statistics.mean(latencies):.1f}s",
-                  flush=True)
+            print(
+                f"    {i}/{len(image_ids)}  mean {statistics.mean(latencies):.1f}s",
+                flush=True,
+            )
 
     result = _summarise(tier, latencies, chars, load_s, warm_s)
     result["allocator_peak_gb"] = peak_fn() / 1e9
@@ -255,13 +252,18 @@ def run_torch(device: str, image_ids: list[str]) -> dict:
         if sample is not None:
             peak_alloc = max(peak_alloc, sample() / 1e9)
         if i % 10 == 0:
-            print(f"    {i}/{len(image_ids)}  mean {statistics.mean(latencies):.1f}s",
-                  flush=True)
+            print(
+                f"    {i}/{len(image_ids)}  mean {statistics.mean(latencies):.1f}s",
+                flush=True,
+            )
 
     result = _summarise(device, latencies, chars, load_s, warm_s)
     result["allocator_peak_gb"] = peak_alloc or None
-    result["allocator_metric"] = ("torch.mps.current_allocated_memory (sampled max)"
-                                 if sample is not None else "none available on cpu")
+    result["allocator_metric"] = (
+        "torch.mps.current_allocated_memory (sampled max)"
+        if sample is not None
+        else "none available on cpu"
+    )
     result["adapter"] = PEFT_ADAPTER.name
     result["model"] = f"{backend_hf.HF_BASE_MODEL} ({dtype})".replace("torch.", "")
     del model
@@ -269,8 +271,9 @@ def run_torch(device: str, image_ids: list[str]) -> dict:
     return result
 
 
-def _summarise(name: str, latencies: list[float], chars: list[int],
-               load_s: float, warm_s: float) -> dict:
+def _summarise(
+    name: str, latencies: list[float], chars: list[int], load_s: float, warm_s: float
+) -> dict:
     return {
         "backend": name,
         "n": len(latencies),
@@ -288,44 +291,55 @@ def _summarise(name: str, latencies: list[float], chars: list[int],
 
 # --- reporting ---------------------------------------------------------------------
 
+
 def report(results: list[dict], limit: int) -> None:
     print(f"\n{'=' * 78}")
-    print(f"Local benchmark — first {limit} receipts of the test split")
+    print(f"Local benchmark - first {limit} receipts of the test split")
     print("=" * 78)
 
-    hdr = (f"{'backend':<10}{'n':>4}{'mean':>9}{'median':>9}{'p95':>9}{'max':>9}"
-           f"{'alloc GB':>10}{'RSS GB':>9}")
+    hdr = (
+        f"{'backend':<10}{'n':>4}{'mean':>9}{'median':>9}{'p95':>9}{'max':>9}"
+        f"{'alloc GB':>10}{'RSS GB':>9}"
+    )
     print(hdr)
     print("-" * len(hdr))
     for r in results:
         a = r["latency_all"]
-        alloc = f"{r['allocator_peak_gb']:.2f}" if r.get("allocator_peak_gb") else "—"
-        print(f"{r['backend']:<10}{r['n']:>4}{a['mean']:>8.1f}s{a['median']:>8.1f}s"
-              f"{a['p95']:>8.1f}s{a['max']:>8.1f}s{alloc:>10}{r['peak_rss_gb']:>9.2f}")
+        alloc = f"{r['allocator_peak_gb']:.2f}" if r.get("allocator_peak_gb") else " - "
+        print(
+            f"{r['backend']:<10}{r['n']:>4}{a['mean']:>8.1f}s{a['median']:>8.1f}s"
+            f"{a['p95']:>8.1f}s{a['max']:>8.1f}s{alloc:>10}{r['peak_rss_gb']:>9.2f}"
+        )
 
     if any(r["latency_first30"] for r in results):
         print("\nFirst 30 only (matches the accuracy gate and the CUDA runs):")
         for r in results:
             a = r["latency_first30"]
             if a:
-                print(f"  {r['backend']:<10} mean {a['mean']:.1f}s  "
-                      f"median {a['median']:.1f}s  max {a['max']:.1f}s")
+                print(
+                    f"  {r['backend']:<10} mean {a['mean']:.1f}s  "
+                    f"median {a['median']:.1f}s  max {a['max']:.1f}s"
+                )
 
     print("\nPer-backend detail:")
     for r in results:
-        print(f"  {r['backend']:<10} load {r['load_s']:.1f}s | warm-up "
-              f"{r['warmup_s']:.1f}s (excluded) | total {r['total_s']:.0f}s")
+        print(
+            f"  {r['backend']:<10} load {r['load_s']:.1f}s | warm-up "
+            f"{r['warmup_s']:.1f}s (excluded) | total {r['total_s']:.0f}s"
+        )
         print(f"  {'':<10} adapter {r['adapter']} | {r['model']}")
         print(f"  {'':<10} memory metric: {r['allocator_metric']}")
 
     print("\nPublished reference points:")
     for name, n, lat, mem in REFERENCE:
-        mem_s = f"{mem} GB" if mem else "—"
+        mem_s = f"{mem} GB" if mem else " - "
         print(f"  {name:<26} n={n:<4} {lat:>5.1f}s   {mem_s}")
 
-    print("\nCaveats: MLX rows use checkpoints/final, transformers rows use "
-          "checkpoints/final_peft —\na row-to-row gap is backend *and* adapter. Peak RSS "
-          "is the only metric measured\nidentically across all rows.")
+    print(
+        "\nCaveats: MLX rows use checkpoints/final, transformers rows use "
+        "checkpoints/final_peft - \na row-to-row gap is backend *and* adapter. Peak RSS "
+        "is the only metric measured\nidentically across all rows."
+    )
 
 
 def _run_in_subprocess(name: str, args) -> dict | None:
@@ -336,19 +350,31 @@ def _run_in_subprocess(name: str, args) -> dict | None:
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "result.json"
-        cmd = [sys.executable, "-u", str(Path(__file__).resolve()),
-               "--worker", name, "--worker-out", str(out),
-               "--limit", str(args.limit), "--split", args.split]
+        cmd = [
+            sys.executable,
+            "-u",
+            str(Path(__file__).resolve()),
+            "--worker",
+            name,
+            "--worker-out",
+            str(out),
+            "--limit",
+            str(args.limit),
+            "--split",
+            args.split,
+        ]
         # Streamed rather than captured: these runs take tens of minutes, and buffering
         # the worker's per-10-receipt progress until it exits leaves no way to tell a slow
         # backend from a hung one.
         stderr_tail: list[str] = []
-        proc = subprocess.Popen(cmd, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, bufsize=1)
+        proc = subprocess.Popen(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1
+        )
         for line in proc.stdout:
             line = line.rstrip()
-            if line and not any(s in line for s in
-                                ("Loading checkpoint", "it/s]", "fast processor")):
+            if line and not any(
+                s in line for s in ("Loading checkpoint", "it/s]", "fast processor")
+            ):
                 print("   ", line, flush=True)
         proc.wait()
         stderr_tail = (proc.stderr.read() or "").strip().splitlines()[-4:]
@@ -356,7 +382,8 @@ def _run_in_subprocess(name: str, args) -> dict | None:
         if not out.exists():
             if any("No module named" in l for l in stderr_tail):
                 raise ImportError(
-                    next(l for l in stderr_tail if "No module named" in l).strip())
+                    next(l for l in stderr_tail if "No module named" in l).strip()
+                )
             raise RuntimeError("worker produced no result. " + " / ".join(stderr_tail))
         return json.loads(out.read_text())
 
@@ -364,33 +391,51 @@ def _run_in_subprocess(name: str, args) -> dict | None:
 def run_worker(name: str, image_ids: list[str], out_path: Path) -> None:
     """Benchmark one backend and write its JSON. Invoked as a subprocess by main()."""
 
-    result = run_mlx(name, image_ids) if name in MLX_TIERS else run_torch(name, image_ids)
+    result = (
+        run_mlx(name, image_ids) if name in MLX_TIERS else run_torch(name, image_ids)
+    )
     out_path.write_text(json.dumps(result) + "\n")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backends", default="mlx-int4,mps",
-                    help=f"comma-separated, or 'all'. Choices: {', '.join(ALL_BACKENDS)}")
-    ap.add_argument("--limit", type=int, default=60,
-                    help="receipts to time; 60 matches quantize.py, 30 matches the gate")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--backends",
+        default="mlx-int4,mps",
+        help=f"comma-separated, or 'all'. Choices: {', '.join(ALL_BACKENDS)}",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=60,
+        help="receipts to time; 60 matches quantize.py, 30 matches the gate",
+    )
     ap.add_argument("--split", choices=["train", "test"], default="test")
-    ap.add_argument("--out", type=Path,
-                    default=PROC_ROOT / "_benchmark_local.json")
-    ap.add_argument("--skip-memory-check", action="store_true",
-                    help="run even when available memory looks insufficient")
-    ap.add_argument("--in-process", action="store_true",
-                    help="run backends in this process instead of one subprocess each. "
-                         "Faster to start, but peak-RSS figures then bleed between "
-                         "backends and only the first is trustworthy.")
+    ap.add_argument("--out", type=Path, default=PROC_ROOT / "_benchmark_local.json")
+    ap.add_argument(
+        "--skip-memory-check",
+        action="store_true",
+        help="run even when available memory looks insufficient",
+    )
+    ap.add_argument(
+        "--in-process",
+        action="store_true",
+        help="run backends in this process instead of one subprocess each. "
+        "Faster to start, but peak-RSS figures then bleed between "
+        "backends and only the first is trustworthy.",
+    )
     # Internal: one backend, one process. Not for direct use.
     ap.add_argument("--worker", help=argparse.SUPPRESS)
     ap.add_argument("--worker-out", type=Path, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
-    names = (ALL_BACKENDS if args.backends == "all"
-             else [b.strip() for b in args.backends.split(",") if b.strip()])
+    names = (
+        ALL_BACKENDS
+        if args.backends == "all"
+        else [b.strip() for b in args.backends.split(",") if b.strip()]
+    )
     unknown = [b for b in names if b not in MLX_TIERS and b not in TORCH_BACKENDS]
     if unknown:
         raise SystemExit(f"Unknown backend(s) {unknown}. Choices: {ALL_BACKENDS}")
@@ -398,8 +443,9 @@ def main() -> None:
     image_ids = load_image_ids(args.split, args.limit)
     missing = [i for i in image_ids if not (DATA_ROOT / i).exists()]
     if missing:
-        raise SystemExit(f"{len(missing)} images missing under {DATA_ROOT}, "
-                         f"e.g. {missing[0]}")
+        raise SystemExit(
+            f"{len(missing)} images missing under {DATA_ROOT}, " f"e.g. {missing[0]}"
+        )
 
     if args.worker:
         run_worker(args.worker, image_ids, args.worker_out)
@@ -413,18 +459,23 @@ def main() -> None:
         try:
             check_headroom(name, args.skip_memory_check)
             if args.in_process:
-                r = (run_mlx(name, image_ids) if name in MLX_TIERS
-                     else run_torch(name, image_ids))
+                r = (
+                    run_mlx(name, image_ids)
+                    if name in MLX_TIERS
+                    else run_torch(name, image_ids)
+                )
             else:
                 # Each backend gets its own process. resource.getrusage reports a
                 # process-lifetime high-water mark that cannot be reset, so running two
-                # backends in one process makes the second inherit the first's peak --
+                # backends in one process makes the second inherit the first's peak
                 # cpu at fp32 would silently make mps look like it used 16 GB. Separate
                 # processes also guarantee the previous backend's weights are really gone.
                 r = _run_in_subprocess(name, args)
         except ImportError as exc:
-            print(f"  skipped: {exc}. Install requirements.txt for the MLX tiers, or "
-                  "requirements-spaces.txt for mps/cpu.")
+            print(
+                f"  skipped: {exc}. Install requirements.txt for the MLX tiers, or "
+                "requirements-spaces.txt for mps/cpu."
+            )
             continue
         except MemoryError as exc:
             print(f"  skipped: {exc}")
@@ -435,8 +486,10 @@ def main() -> None:
         if r is None:
             continue
         results.append(r)
-        print(f"  -> {r['latency_all']['mean']:.1f}s/receipt, "
-              f"peak RSS {r['peak_rss_gb']:.2f} GB")
+        print(
+            f"  -> {r['latency_all']['mean']:.1f}s/receipt, "
+            f"peak RSS {r['peak_rss_gb']:.2f} GB"
+        )
 
     if not results:
         raise SystemExit("No backend produced results.")

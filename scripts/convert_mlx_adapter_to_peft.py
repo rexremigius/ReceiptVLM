@@ -1,41 +1,15 @@
-"""Converts the MLX LoRA adapter from checkpoints/ into a PEFT-format adapter that
-transformers can load on CUDA.
+"""Converts the MLX LoRA adapter into a peft-format adapter transformers can load.
 
-The on-device stack (mlx_vlm) and the hosted stack (transformers + peft) store the same
-low-rank update in different conventions, so the port is a key rename plus a transpose of
-every matrix. Both sides are pinned to the upstream definitions:
-
-  mlx_vlm.trainer.lora.LoRaLayer:
-      A: (in_dims, rank)   B: (rank, out_dims)   scale = alpha / rank
-      y = original_layer(x) + scale * ((dropout(x) @ A) @ B)
-
-  peft.tuners.lora.Linear:
-      lora_A.weight: (r, in)   lora_B.weight: (out, r)   scaling = lora_alpha / r
-      y = base(x) + scaling * lora_B(lora_A(dropout(x)))
-
-Equating the two update paths gives lora_A.weight = A.T and lora_B.weight = B.T, with
-lora_alpha/r reproducing MLX's alpha/rank exactly. Carrying alpha and rank over verbatim
-(rather than renormalizing) keeps the scale identical instead of merely proportional.
-
-Two things this deliberately does not do:
-
-  * It does not touch the vision tower. The MLX adapter only ever contained
-    language_model.* tensors, so target_modules is emitted as a path-anchored regex.
-    A bare suffix list like ["q_proj", ...] would also match the vision tower's own
-    attention and MLP projections and inject untrained adapters there.
-
-  * It does not change precision. MLX stored these as float32 and they are written out
-    as float32; peft casts to the base model's dtype at load time.
-
-The adapter was trained by QLoRA on a 4-bit MLX base, so replaying it on an fp16 HF base
-is not bit-identical by construction. That discrepancy is what validate_peft_adapter.py
-measures; this script only guarantees the algebra is faithfully transcribed.
+The two conventions differ by a transpose of each matrix plus the same alpha/rank
+scale, so lora_A = A.T and lora_B = B.T with alpha and rank carried over verbatim.
+target_modules is emitted as a path-anchored regex: a bare suffix list would also
+match the vision tower's 161 same-named projections.
 
 Usage:
-    python scripts/convert_mlx_adapter_to_peft.py \
-        --mlx-adapter checkpoints/final \
+    python scripts/convert_mlx_adapter_to_peft.py --mlx-adapter checkpoints/final \
         --out checkpoints/final_peft
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,11 +35,19 @@ MLX_TEXT_PREFIX = "language_model.model."
 # instantiated model and reports a mismatch rather than loading a no-op adapter.
 TEXT_PREFIXES = {
     "new": "model.language_model",  # transformers >= 4.52 (what the Space pins)
-    "legacy": "model",              # transformers 4.49, the pin mlx_vlm needs
+    "legacy": "model",  # transformers 4.49, the pin mlx_vlm needs
 }
 
 # The seven projections the MLX run adapted, via find_all_linear_names over the decoder.
-TARGET_SUFFIXES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+TARGET_SUFFIXES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
 
 # language_model.model.layers.0.self_attn.q_proj.A -> ("0", "self_attn.q_proj", "A")
 MLX_KEY_RE = re.compile(r"^layers\.(\d+)\.(.+)\.([AB])$")
@@ -74,11 +56,15 @@ MLX_KEY_RE = re.compile(r"^layers\.(\d+)\.(.+)\.([AB])$")
 def target_modules_regex(text_prefix: str) -> str:
     """Anchor target_modules to the text decoder so peft cannot match the vision tower."""
 
-    return (rf"{re.escape(text_prefix)}\.layers\.\d+\."
-            rf"(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)")
+    return (
+        rf"{re.escape(text_prefix)}\.layers\.\d+\."
+        rf"(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)"
+    )
 
 
-def convert_tensors(mlx_path: Path, text_prefix: str) -> tuple[dict[str, np.ndarray], dict]:
+def convert_tensors(
+    mlx_path: Path, text_prefix: str
+) -> tuple[dict[str, np.ndarray], dict]:
     """Remap and transpose every MLX LoRA tensor into its peft equivalent.
 
     Returns the peft state dict plus a stats dict for the caller to report on. Raises if
@@ -102,7 +88,7 @@ def convert_tensors(mlx_path: Path, text_prefix: str) -> tuple[dict[str, np.ndar
                     "text-decoder LoRA; a vision-tower adapter would need its own mapping "
                     "and its own target_modules."
                 )
-            rest = key[len(MLX_TEXT_PREFIX):]
+            rest = key[len(MLX_TEXT_PREFIX) :]
             m = MLX_KEY_RE.match(rest)
             if not m:
                 raise ValueError(f"Unrecognized MLX LoRA key: {key!r}")
@@ -117,7 +103,9 @@ def convert_tensors(mlx_path: Path, text_prefix: str) -> tuple[dict[str, np.ndar
 
             tensor = f.get_tensor(key)
             if tensor.ndim != 2:
-                raise ValueError(f"{key!r} has shape {tensor.shape}; expected a 2-D matrix.")
+                raise ValueError(
+                    f"{key!r} has shape {tensor.shape}; expected a 2-D matrix."
+                )
 
             # A: (in, r) -> lora_A.weight (r, in);  B: (r, out) -> lora_B.weight (out, r)
             ranks.add(tensor.shape[1] if ab == "A" else tensor.shape[0])
@@ -133,7 +121,9 @@ def convert_tensors(mlx_path: Path, text_prefix: str) -> tuple[dict[str, np.ndar
 
     for name, ab in sorted(pairs.items()):
         if set(ab) != {"A", "B"}:
-            raise ValueError(f"{name} has {sorted(ab)}; every module needs both A and B.")
+            raise ValueError(
+                f"{name} has {sorted(ab)}; every module needs both A and B."
+            )
         if ab["A"][1] != ab["B"][0]:
             raise ValueError(
                 f"{name}: A is {ab['A']} and B is {ab['B']}; inner rank does not match."
@@ -165,7 +155,7 @@ def build_peft_config(mlx_cfg: dict, text_prefix: str, rank: int) -> dict:
         "base_model_name_or_path": HF_BASE_MODEL,
         "r": rank,
         # peft scales by lora_alpha / r; MLX scaled by alpha / rank. Same numbers in, same
-        # scale out -- do not "normalize" alpha here.
+        # scale out - do not "normalize" alpha here.
         "lora_alpha": alpha,
         "lora_dropout": mlx_cfg.get("dropout", 0.0),
         "target_modules": target_modules_regex(text_prefix),
@@ -178,15 +168,28 @@ def build_peft_config(mlx_cfg: dict, text_prefix: str, rank: int) -> dict:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mlx-adapter", type=Path, default=Path("checkpoints/final"),
-                    help="Directory holding adapters.safetensors + adapter_config.json")
-    ap.add_argument("--out", type=Path, default=Path("checkpoints/final_peft"),
-                    help="Destination directory for the peft-format adapter")
-    ap.add_argument("--layout", choices=sorted(TEXT_PREFIXES), default="new",
-                    help="Which transformers module layout to emit keys for "
-                         "(new: >=4.52, legacy: 4.49). Default: new")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--mlx-adapter",
+        type=Path,
+        default=Path("checkpoints/final"),
+        help="Directory holding adapters.safetensors + adapter_config.json",
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path("checkpoints/final_peft"),
+        help="Destination directory for the peft-format adapter",
+    )
+    ap.add_argument(
+        "--layout",
+        choices=sorted(TEXT_PREFIXES),
+        default="new",
+        help="Which transformers module layout to emit keys for "
+        "(new: >=4.52, legacy: 4.49). Default: new",
+    )
     args = ap.parse_args()
 
     src_tensors = args.mlx_adapter / "adapters.safetensors"
@@ -207,15 +210,21 @@ def main() -> None:
 
     lo, hi = stats["layer_range"]
     scale = peft_cfg["lora_alpha"] / peft_cfg["r"]
-    print(f"Converted {stats['n_tensors']} tensors "
-          f"({stats['n_modules']} modules x A/B) -> {args.out}")
+    print(
+        f"Converted {stats['n_tensors']} tensors "
+        f"({stats['n_modules']} modules x A/B) -> {args.out}"
+    )
     print(f"  layout        {args.layout} ({text_prefix})")
     print(f"  layers        {stats['n_layers']} (indices {lo}-{hi})")
     print(f"  projections   {', '.join(stats['suffixes'])}")
-    print(f"  rank / alpha  {peft_cfg['r']} / {peft_cfg['lora_alpha']}  "
-          f"-> scale {scale:g}")
-    print("\nNext: python scripts/validate_peft_adapter.py --adapter "
-          f"{args.out} --limit 30")
+    print(
+        f"  rank / alpha  {peft_cfg['r']} / {peft_cfg['lora_alpha']}  "
+        f"-> scale {scale:g}"
+    )
+    print(
+        "\nNext: python scripts/validate_peft_adapter.py --adapter "
+        f"{args.out} --limit 30"
+    )
 
 
 if __name__ == "__main__":
