@@ -4,6 +4,7 @@ near/far miss, text partial/unrelated overlap, line-item missing/hallucinated),
 rather than just reporting a single wrong/right score. Turns eval.py's F1 numbers
 into a report of what kinds of mistakes the model actually makes.
 """
+
 from __future__ import annotations
 import argparse
 import difflib
@@ -14,19 +15,19 @@ from collections import defaultdict
 import eval as ev
 
 # --- category definitions ----------------------------------------------------
-MISSING = "missing"                    # gold has value, pred omitted it
-HALLUCINATED = "hallucinated"          # pred has value, gold has none
+MISSING = "missing"  # gold has value, pred omitted it
+HALLUCINATED = "hallucinated"  # pred has value, gold has none
 DIGIT_TRANSPOSED = "digit_transposed"  # same digits, different order/position
-NUMERIC_NEAR = "numeric_near_miss"     # numeric, wrong, but close (<10% off)
-NUMERIC_FAR = "numeric_far_miss"       # numeric, wrong, way off
+NUMERIC_NEAR = "numeric_near_miss"  # numeric, wrong, but close (<10% off)
+NUMERIC_FAR = "numeric_far_miss"  # numeric, wrong, way off
 TEXT_PARTIAL = "text_partial_overlap"  # text, wrong, but shares real overlap
-TEXT_UNRELATED = "text_unrelated"      # text, wrong, no meaningful overlap
-LINE_MISSING = "line_item_missing"     # gold row never matched to a pred row
+TEXT_UNRELATED = "text_unrelated"  # text, wrong, no meaningful overlap
+LINE_MISSING = "line_item_missing"  # gold row never matched to a pred row
 LINE_EXTRA = "line_item_hallucinated"  # pred row never matched to a gold row
 
-NEAR_MISS_REL_THRESHOLD = 0.10   # <10% relative error => "near miss"
-TEXT_PARTIAL_THRESHOLD = 0.3     # token-Jaccard above this => "partial overlap"
-MAX_EXAMPLES_PER_CATEGORY = 5    # keep the report skimmable, not a data dump
+NEAR_MISS_REL_THRESHOLD = 0.10  # <10% relative error => "near miss"
+TEXT_PARTIAL_THRESHOLD = 0.3  # token-Jaccard above this => "partial overlap"
+MAX_EXAMPLES_PER_CATEGORY = 5  # keep the report skimmable, not a data dump
 
 
 def _digits_only(v):
@@ -86,7 +87,10 @@ def classify(field, gold_val, pred_val):
     else:
         gn, pn = ev.normalize_text(gold_val), ev.normalize_text(pred_val)
         substring_match = bool(gn) and bool(pn) and (gn in pn or pn in gn)
-        overlaps = substring_match or token_overlap(gold_val, pred_val) >= TEXT_PARTIAL_THRESHOLD
+        overlaps = (
+            substring_match
+            or token_overlap(gold_val, pred_val) >= TEXT_PARTIAL_THRESHOLD
+        )
         return TEXT_PARTIAL if overlaps else TEXT_UNRELATED
 
 
@@ -133,8 +137,17 @@ def build_taxonomy(gold_by_id, pred_by_id):
     return counts, examples, len(ids)
 
 
-CATEGORY_ORDER = [MISSING, HALLUCINATED, DIGIT_TRANSPOSED, NUMERIC_NEAR,
-                   NUMERIC_FAR, TEXT_PARTIAL, TEXT_UNRELATED, LINE_MISSING, LINE_EXTRA]
+CATEGORY_ORDER = [
+    MISSING,
+    HALLUCINATED,
+    DIGIT_TRANSPOSED,
+    NUMERIC_NEAR,
+    NUMERIC_FAR,
+    TEXT_PARTIAL,
+    TEXT_UNRELATED,
+    LINE_MISSING,
+    LINE_EXTRA,
+]
 
 
 def print_report(name, counts, examples, n):
@@ -148,13 +161,18 @@ def print_report(name, counts, examples, n):
     field_totals = []
     for field in sorted(counts, key=lambda f: -sum(counts[f].values())):
         row = counts[field]
-        line = f"{field:<24}" + "".join(f"{row.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER)
+        line = f"{field:<24}" + "".join(
+            f"{row.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER
+        )
         print(line)
         for c in CATEGORY_ORDER:
             total_by_cat[c] += row.get(c, 0)
         field_totals.append((field, sum(row.values())))
     print("-" * (24 + col_w * len(CATEGORY_ORDER)))
-    print(f"{'TOTAL':<24}" + "".join(f"{total_by_cat.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER))
+    print(
+        f"{'TOTAL':<24}"
+        + "".join(f"{total_by_cat.get(c, 0):>{col_w}}" for c in CATEGORY_ORDER)
+    )
 
     field_totals.sort(key=lambda x: -x[1])
     print("\ntop offending fields:")
@@ -184,41 +202,97 @@ def _smoke():
     """Run a synthetic smoke test of the taxonomy analysis, with a small gold/pred pair."""
 
     gold = [
-        {"image_id": "r1", "store": "Trader Joes", "date": "2026-01-05",
-         "subtotal": "10.00", "tax": "0.80", "total": "10.80",
-         "line_items": [{"name": "whole milk", "price": "3.50"},
-                        {"name": "eggs", "price": "6.50"}]},
-        {"image_id": "r2", "store": "CVS Pharmacy", "date": "2026-01-06",
-         "subtotal": "5.00", "tax": "0.40", "tip": None, "total": "5.40",
-         "line_items": [{"name": "advil", "price": "5.00"}]},
-        {"image_id": "r3", "store": "Target", "date": "2026-01-07",
-         "subtotal": "20.00", "tax": "1.60", "total": "49.99",
-         "line_items": [{"name": "socks", "price": "20.00"}]},
-        {"image_id": "r4", "store": "Chipotle", "date": "2026-01-08",
-         "subtotal": "12.00", "tax": "0.96", "tip": "2.00", "total": "14.96",
-         "line_items": [{"name": "burrito bowl", "price": "12.00"}]},
+        {
+            "image_id": "r1",
+            "store": "Trader Joes",
+            "date": "2026-01-05",
+            "subtotal": "10.00",
+            "tax": "0.80",
+            "total": "10.80",
+            "line_items": [
+                {"name": "whole milk", "price": "3.50"},
+                {"name": "eggs", "price": "6.50"},
+            ],
+        },
+        {
+            "image_id": "r2",
+            "store": "CVS Pharmacy",
+            "date": "2026-01-06",
+            "subtotal": "5.00",
+            "tax": "0.40",
+            "tip": None,
+            "total": "5.40",
+            "line_items": [{"name": "advil", "price": "5.00"}],
+        },
+        {
+            "image_id": "r3",
+            "store": "Target",
+            "date": "2026-01-07",
+            "subtotal": "20.00",
+            "tax": "1.60",
+            "total": "49.99",
+            "line_items": [{"name": "socks", "price": "20.00"}],
+        },
+        {
+            "image_id": "r4",
+            "store": "Chipotle",
+            "date": "2026-01-08",
+            "subtotal": "12.00",
+            "tax": "0.96",
+            "tip": "2.00",
+            "total": "14.96",
+            "line_items": [{"name": "burrito bowl", "price": "12.00"}],
+        },
     ]
     pred = [
         # r1: hallucinated tip, near-miss tax rounding, hallucinated extra line item
-        {"image_id": "r1", "store": "Trader Joes", "date": "2026-01-05",
-         "subtotal": "10.00", "tax": "0.75", "tip": "1.00", "total": "10.80",
-         "line_items": [{"name": "whole milk", "price": "3.50"},
-                        {"name": "eggs", "price": "6.50"},
-                        {"name": "bread", "price": "4.00"}]},
+        {
+            "image_id": "r1",
+            "store": "Trader Joes",
+            "date": "2026-01-05",
+            "subtotal": "10.00",
+            "tax": "0.75",
+            "tip": "1.00",
+            "total": "10.80",
+            "line_items": [
+                {"name": "whole milk", "price": "3.50"},
+                {"name": "eggs", "price": "6.50"},
+                {"name": "bread", "price": "4.00"},
+            ],
+        },
         # r2: unrelated store misread, dropped line item entirely
-        {"image_id": "r2", "store": "Walgreens", "date": "2026-01-06",
-         "subtotal": "5.00", "tax": "0.40", "total": "5.40",
-         "line_items": []},
+        {
+            "image_id": "r2",
+            "store": "Walgreens",
+            "date": "2026-01-06",
+            "subtotal": "5.00",
+            "tax": "0.40",
+            "total": "5.40",
+            "line_items": [],
+        },
         # r3: classic digit transposition on total (49.99 gold vs 94.99 pred)
-        {"image_id": "r3", "store": "Target", "date": "2026-01-07",
-         "subtotal": "20.00", "tax": "1.60", "total": "94.99",
-         "line_items": [{"name": "socks", "price": "20.00"}]},
+        {
+            "image_id": "r3",
+            "store": "Target",
+            "date": "2026-01-07",
+            "subtotal": "20.00",
+            "tax": "1.60",
+            "total": "94.99",
+            "line_items": [{"name": "socks", "price": "20.00"}],
+        },
         # r4: partial text overlap on store, far-miss on subtotal, missing tax
-        {"image_id": "r4", "store": "Chipotle Mexican Grill #4021", "date": "2026-01-08",
-         "subtotal": "21.00", "tip": "2.00", "total": "14.96",
-         "line_items": [{"name": "burrito bowl", "price": "12.00"}]},
+        {
+            "image_id": "r4",
+            "store": "Chipotle Mexican Grill #4021",
+            "date": "2026-01-08",
+            "subtotal": "21.00",
+            "tip": "2.00",
+            "total": "14.96",
+            "line_items": [{"name": "burrito bowl", "price": "12.00"}],
+        },
     ]
     import tempfile, os
+
     d = tempfile.mkdtemp()
     paths = {}
     for nm, data in [("gold", gold), ("pred", pred)]:

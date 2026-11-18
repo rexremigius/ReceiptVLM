@@ -4,6 +4,7 @@ skip finished configs. Picks the combination with the best validation loss, then
 confirms that winning config with a full run before it gets promoted to the
 production checkpoint.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,13 +46,29 @@ def run_trial(rank: float, alpha: float, lr: float) -> dict:
     t0 = time.time()
     subprocess.run(
         [
-            sys.executable, "src/train.py",
-            "--limit", str(SUBSET_LIMIT), "--epochs", str(SUBSET_EPOCHS),
-            "--lora-rank", str(rank), "--lora-alpha", str(alpha), "--lr", str(lr),
-            "--ckpt-root", str(ckpt_dir),
-            "--eval-every", "25", "--save-every", "100000", "--print-every", "50",
+            sys.executable,
+            "src/train.py",
+            "--limit",
+            str(SUBSET_LIMIT),
+            "--epochs",
+            str(SUBSET_EPOCHS),
+            "--lora-rank",
+            str(rank),
+            "--lora-alpha",
+            str(alpha),
+            "--lr",
+            str(lr),
+            "--ckpt-root",
+            str(ckpt_dir),
+            "--eval-every",
+            "25",
+            "--save-every",
+            "100000",
+            "--print-every",
+            "50",
         ],
-        cwd=REPO_ROOT, check=True,
+        cwd=REPO_ROOT,
+        check=True,
     )
     print(f"[{name}] done in {time.time() - t0:.0f}s")
     return json.loads(log_path.read_text())
@@ -84,12 +101,16 @@ def main():
     all_results = {}
 
     best_rank, rank_results = sweep_dimension(
-        "rank", RANK_GRID, {"rank": DEFAULT_RANK, "alpha": DEFAULT_ALPHA, "lr": DEFAULT_LR}
+        "rank",
+        RANK_GRID,
+        {"rank": DEFAULT_RANK, "alpha": DEFAULT_ALPHA, "lr": DEFAULT_LR},
     )
     all_results["rank"] = rank_results
 
     best_alpha, alpha_results = sweep_dimension(
-        "alpha", ALPHA_GRID, {"rank": best_rank, "alpha": DEFAULT_ALPHA, "lr": DEFAULT_LR}
+        "alpha",
+        ALPHA_GRID,
+        {"rank": best_rank, "alpha": DEFAULT_ALPHA, "lr": DEFAULT_LR},
     )
     all_results["alpha"] = alpha_results
 
@@ -101,8 +122,11 @@ def main():
     print(f"\n=== winning config: rank={best_rank} alpha={best_alpha} lr={best_lr} ===")
 
     summary = {
-        "subset_limit": SUBSET_LIMIT, "subset_epochs": SUBSET_EPOCHS,
-        "sweep_results": {k: {str(kk): vv for kk, vv in v.items()} for k, v in all_results.items()},
+        "subset_limit": SUBSET_LIMIT,
+        "subset_epochs": SUBSET_EPOCHS,
+        "sweep_results": {
+            k: {str(kk): vv for kk, vv in v.items()} for k, v in all_results.items()
+        },
         "winning_config": {"rank": best_rank, "alpha": best_alpha, "lr": best_lr},
     }
     (SWEEP_ROOT / "_sweep_summary.json").write_text(json.dumps(summary, indent=2))
@@ -111,17 +135,33 @@ def main():
     t0 = time.time()
     subprocess.run(
         [
-            sys.executable, "src/train.py",
-            "--epochs", "2",
-            "--lora-rank", str(best_rank), "--lora-alpha", str(best_alpha), "--lr", str(best_lr),
-            "--ckpt-root", str(CONFIRM_ROOT),
-            "--eval-every", "100", "--save-every", "200", "--print-every", "25",
+            sys.executable,
+            "src/train.py",
+            "--epochs",
+            "2",
+            "--lora-rank",
+            str(best_rank),
+            "--lora-alpha",
+            str(best_alpha),
+            "--lr",
+            str(best_lr),
+            "--ckpt-root",
+            str(CONFIRM_ROOT),
+            "--eval-every",
+            "100",
+            "--save-every",
+            "200",
+            "--print-every",
+            "25",
         ],
-        cwd=REPO_ROOT, check=True,
+        cwd=REPO_ROOT,
+        check=True,
     )
     print(f"confirmation run done in {time.time() - t0:.0f}s -> {CONFIRM_ROOT}/final")
-    print("\nNOTE: this does NOT overwrite checkpoints/final — compare "
-          f"{CONFIRM_ROOT}/final/training_log.json against the existing run before promoting it.")
+    print(
+        "\nNOTE: this does NOT overwrite checkpoints/final - compare "
+        f"{CONFIRM_ROOT}/final/training_log.json against the existing run before promoting it."
+    )
 
 
 if __name__ == "__main__":

@@ -3,12 +3,15 @@ truth frequently concatenates words with no spaces, so this splits camelCase and
 ACRONYM boundaries back into words, with an opt-in letter-digit split too aggressive
 to enable by default.
 """
+
 from __future__ import annotations
 
 import re
 
-_LOWER_TO_UPPER = re.compile(r"(?<=[a-z])(?=[A-Z])")          # GrossesWasser - Grosses Wasser
-_ACRONYM_TO_WORD = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")    # HALFDietCake - HALF DietCake
+_LOWER_TO_UPPER = re.compile(r"(?<=[a-z])(?=[A-Z])")  # GrossesWasser - Grosses Wasser
+_ACRONYM_TO_WORD = re.compile(
+    r"(?<=[A-Z])(?=[A-Z][a-z])"
+)  # HALFDietCake - HALF DietCake
 # opt-in only: mangles brands that fuse letters+digits (7UP, V8), so off by default
 _LETTER_DIGIT = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
 

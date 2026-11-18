@@ -3,6 +3,7 @@ against. Computes micro-F1 across the six scalar fields plus line items (matched
 name-similarity alignment, not position), a bootstrap confidence interval, and a
 paired significance test between two prediction files.
 """
+
 from __future__ import annotations
 import argparse
 import difflib
@@ -14,10 +15,10 @@ from collections import defaultdict
 # schema contract: matches prep.py's actual output (see prep.py SCALAR_MAP)
 SCALAR_FIELDS = ["store", "date", "subtotal", "tax", "tip", "total"]
 LINE_ITEM_FIELD = "line_items"
-LINE_ITEM_KEYS = ["name", "price"]        # prep.py has no quantity field
+LINE_ITEM_KEYS = ["name", "price"]  # prep.py has no quantity field
 NUMERIC_FIELDS = {"subtotal", "tax", "tip", "total", "price"}
-NUM_TOL = 0.005                # abs tolerance for numeric match (cent-level)
-LINE_MATCH_THRESHOLD = 0.4     # min desc_score to align two line items
+NUM_TOL = 0.005  # abs tolerance for numeric match (cent-level)
+LINE_MATCH_THRESHOLD = 0.4  # min desc_score to align two line items
 ALIGN_KEY = LINE_ITEM_KEYS[0]  # field used to match gold/pred line items by similarity
 CHAR_FALLBACK_THRESHOLD = 0.75  # high bar: only trust char-ratio on single-token names
 
@@ -149,11 +150,11 @@ def score_receipt(gold, pred, counts):
         for k in LINE_ITEM_KEYS:
             fld = f"{LINE_ITEM_FIELD}.{k}"
             count_pair(fld, g_items[gi].get(k), p_items[pj].get(k), counts)
-    for gi in g_lo:                       # unmatched gold rows -> all FN
+    for gi in g_lo:  # unmatched gold rows -> all FN
         for k in LINE_ITEM_KEYS:
             if g_items[gi].get(k) is not None:
                 counts[f"{LINE_ITEM_FIELD}.{k}"]["fn"] += 1
-    for pj in p_lo:                       # spurious pred rows -> all FP
+    for pj in p_lo:  # spurious pred rows -> all FP
         for k in LINE_ITEM_KEYS:
             if p_items[pj].get(k) is not None:
                 counts[f"{LINE_ITEM_FIELD}.{k}"]["fp"] += 1
@@ -235,8 +236,12 @@ def paired_bootstrap_test(gold_by_id, pred_a_by_id, pred_b_by_id, n=1000, seed=0
             i = rng.choice(ids)
             a_tp, a_fp, a_fn = counts_a[i]
             b_tp, b_fp, b_fn = counts_b[i]
-            tp_a += a_tp; fp_a += a_fp; fn_a += a_fn
-            tp_b += b_tp; fp_b += b_fp; fn_b += b_fn
+            tp_a += a_tp
+            fp_a += a_fp
+            fn_a += a_fn
+            tp_b += b_tp
+            fp_b += b_fp
+            fn_b += b_fn
         micro_a = {"tp": tp_a, "fp": fp_a, "fn": fn_a}
         micro_b = {"tp": tp_b, "fp": fp_b, "fn": fn_b}
         diffs.append(prf(micro_b)[2] - prf(micro_a)[2])
@@ -309,40 +314,78 @@ def run(gold_path, pred_paths, boot=1000):
                     continue
                 sig = "significant" if test["p_approx"] < 0.05 else "not significant"
                 print(f"{b_path} vs {a_path}:")
-                print(f"  delta micro-F1 = {test['mean_diff']:+.3f}  "
-                      f"95% CI [{test['ci'][0]:+.3f}, {test['ci'][1]:+.3f}]  "
-                      f"p~={test['p_approx']:.3f} ({sig} at alpha=0.05)")
+                print(
+                    f"  delta micro-F1 = {test['mean_diff']:+.3f}  "
+                    f"95% CI [{test['ci'][0]:+.3f}, {test['ci'][1]:+.3f}]  "
+                    f"p~={test['p_approx']:.3f} ({sig} at alpha=0.05)"
+                )
     return results
 
 
 def _smoke():
     gold = [
-        {"image_id": "r1", "store": "Trader Joes", "date": "2026-01-05",
-         "subtotal": "10.00", "tax": "0.80", "total": "10.80",
-         "line_items": [{"name": "milk", "price": "3.50"},
-                        {"name": "eggs", "price": "6.50"}]},
-        {"image_id": "r2", "store": "CVS", "date": "2026-01-06",
-         "subtotal": "5.00", "tax": "0.40", "total": "5.40",
-         "line_items": [{"name": "advil", "price": "5.00"}]},
-        {"image_id": "r3", "store": "Target", "date": "2026-01-07",
-         "subtotal": "20.00", "tax": "1.60", "total": "21.60", "tip": None,
-         "line_items": [{"name": "socks", "price": "20.00"}]},
+        {
+            "image_id": "r1",
+            "store": "Trader Joes",
+            "date": "2026-01-05",
+            "subtotal": "10.00",
+            "tax": "0.80",
+            "total": "10.80",
+            "line_items": [
+                {"name": "milk", "price": "3.50"},
+                {"name": "eggs", "price": "6.50"},
+            ],
+        },
+        {
+            "image_id": "r2",
+            "store": "CVS",
+            "date": "2026-01-06",
+            "subtotal": "5.00",
+            "tax": "0.40",
+            "total": "5.40",
+            "line_items": [{"name": "advil", "price": "5.00"}],
+        },
+        {
+            "image_id": "r3",
+            "store": "Target",
+            "date": "2026-01-07",
+            "subtotal": "20.00",
+            "tax": "1.60",
+            "total": "21.60",
+            "tip": None,
+            "line_items": [{"name": "socks", "price": "20.00"}],
+        },
     ]
     # baseline: misses tax, wrong total on r1, drops a line item
     baseline = [
-        {"image_id": "r1", "store": "Trader Joes", "date": "2026-01-05",
-         "subtotal": "10.00", "total": "10.08",
-         "line_items": [{"name": "milk", "price": "3.50"}]},
-        {"image_id": "r2", "store": "cvs", "date": "2026-01-06",
-         "subtotal": "5.00", "total": "5.40",
-         "line_items": [{"name": "advil", "price": "5.00"}]},
-        {"image_id": "r3", "store": "Targett", "total": "21.60",
-         "line_items": [{"name": "socks", "price": "20.00"}]},
+        {
+            "image_id": "r1",
+            "store": "Trader Joes",
+            "date": "2026-01-05",
+            "subtotal": "10.00",
+            "total": "10.08",
+            "line_items": [{"name": "milk", "price": "3.50"}],
+        },
+        {
+            "image_id": "r2",
+            "store": "cvs",
+            "date": "2026-01-06",
+            "subtotal": "5.00",
+            "total": "5.40",
+            "line_items": [{"name": "advil", "price": "5.00"}],
+        },
+        {
+            "image_id": "r3",
+            "store": "Targett",
+            "total": "21.60",
+            "line_items": [{"name": "socks", "price": "20.00"}],
+        },
     ]
     # finetuned: near-perfect, minor casing only
     finetuned = [dict(g) for g in gold]
 
     import tempfile, os
+
     d = tempfile.mkdtemp()
     paths = {}
     for nm, data in [("gold", gold), ("baseline", baseline), ("finetuned", finetuned)]:

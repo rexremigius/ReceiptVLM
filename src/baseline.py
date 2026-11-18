@@ -4,6 +4,7 @@ numeric-date patterns) plus a line-item heuristic that pairs each text line's
 trailing money match with the text before it as the item name. Outputs the same
 schema as prep.py, so eval.py can score it identically to any other predictor.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,13 +23,20 @@ MONEY_RE = re.compile(r"\$?\s*(-?\d[\d,]*\.\d{2})")
 SUBTOTAL_RE = re.compile(r"\bsub[\s-]?total\b", re.I)
 TAX_RE = re.compile(r"\b(tax|vat|gst|hst)\b", re.I)
 TIP_RE = re.compile(r"\b(tip|gratuity)\b", re.I)
-TOTAL_RE = re.compile(r"\btotal\b", re.I)  # "subtotal" never matches: no \b before its "total"
+TOTAL_RE = re.compile(
+    r"\btotal\b", re.I
+)  # "subtotal" never matches: no \b before its "total"
 DATE_NUMERIC_RE = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
 DATE_MONTH_RE = re.compile(
     r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{2,4}\b",
     re.I,
 )
-FIELD_KEYWORD_RES = [SUBTOTAL_RE, TAX_RE, TIP_RE, TOTAL_RE]  # exclude these lines from line_items
+FIELD_KEYWORD_RES = [
+    SUBTOTAL_RE,
+    TAX_RE,
+    TIP_RE,
+    TOTAL_RE,
+]  # exclude these lines from line_items
 
 
 def ocr_lines(image_path: Path) -> list[str]:
@@ -152,8 +160,12 @@ def process_split(split: str, limit: int | None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["train", "test", "both"], default="test")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="cap receipts processed (validation subset)")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="cap receipts processed (validation subset)",
+    )
     args = ap.parse_args()
 
     splits = ["train", "test"] if args.split == "both" else [args.split]

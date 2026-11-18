@@ -7,6 +7,27 @@ data/*.tar
 *.bin
 checkpoints/
 
+# Staged Hugging Face Space (regenerate with scripts/build_space.py)
+build/
+
 # Python
 __pycache__/
 .venv/
+
+# Runtime output. confidence.jsonl is truncated on every backend start, and the .out
+# files are stray process logs -- none of it is a result.
+logs/
+
+# Regenerated on every app start: pipeline.ConfidenceScorer refits the Platt calibration
+# and confidence.run() rewrites these summaries (see src/confidence.py).
+data/processed/_confidence_*.json
+
+# Benchmark and evaluation artifacts. Reproduce with scripts/benchmark_local.py,
+# notebooks/kaggle_benchmark_cuda.ipynb and scripts/validate_peft_adapter.py; the
+# numbers that matter are written up in RESULTS.md §5.
+data/processed/_benchmark_*.json
+data/processed/peft_test*.jsonl
+data/processed/*actual_run*
+
+# macOS
+.DS_Store
